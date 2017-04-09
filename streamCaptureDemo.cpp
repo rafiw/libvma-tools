@@ -79,8 +79,9 @@ struct RXSock {
 	uint64_t	rxCount;
 	uint64_t	rxDrop;
 	uint64_t	statTime;
-	uint64_t	lastBlockId;
+	int	lastBlockId;
 	int		LastSequenceNumber;
+	int     lastPacketType;
 	int		index;
 	int		fd;
 	int		ring_fd;
@@ -103,18 +104,20 @@ struct RXThread {
 };
 
 
-
+static void checkpacket(uint8_t* data, struct RXSock* sock);
 static void checkMpegTsPacket (uint8_t* data, struct RXSock* sock);
 static void checkST2022Packet(uint8_t* data, struct RXSock* sock);
+static void checkGVSPV2packet(uint8_t* data, struct RXSock* sock);
 
 static void checkMpegTsPackets(uint8_t* data,size_t packets,struct RXSock* sock);
-//static void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
 static void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock);
-static void checkpacket(uint8_t* data, struct RXSock* sock);
 static void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock);
+
 static void printdummyInfo(RXSock* sock);
 static void printMpegTsInfo(RXSock* sock);
 static inline void printST2022Info(struct RXSock* sock);
+static inline void printGvspInfo(struct RXSock* sock);
 
 
 
@@ -361,7 +364,8 @@ void *run_stride(void *arg)
 					continue;
 				}
 				data = ((uint8_t *) completion.payload_ptr);
-				t->sock[i]->fvalidatePackets(data, completion.packets, t->sock[i]);
+		        printf("validating %lu packets\n",completion.packets);
+				t->sock[i]->fvalidatePackets(data, (int)completion.payload_length / 2048, t->sock[i]);
 			}
 		}
 		usleep(sleep_time);
@@ -734,6 +738,13 @@ void checkpacket(uint8_t* data, struct RXSock* sock)
 		sock->fprintinfo = printST2022Info;
 		return;
 		}
+	else 
+		{
+		sock->fvalidatePacket = checkGVSPV2packet;
+		
+		sock->fvalidatePackets = checkGVSPV2packets;
+		sock->fprintinfo = printGvspInfo;		
+		}
 	printf("Socket address %s:%u, Failed to parse packet format\n", sock->ipAddress,sock->sin_port);
 
 
@@ -750,7 +761,8 @@ void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock)
 static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 {
 	uint16_t pid;
-		// skip mac IP and UDP hdr
+  int newPidInPacket=0;
+	// skip mac IP and UDP hdr
 		sock->rxCount++;
 		for (int pes = 0; pes < 7; pes++, data += 188) {
 
@@ -769,11 +781,12 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 							}
 						}
 					} else { // first time
+            newPidInPacket=1;
 						sock->pidTable[pid].lastcc = (tsheader & 0xF);
 						for (int p = 0; p < MAX_PIDS_TS; p++) {
 							if (sock->rPids[p] == 0x1FFF) {
 								sock->rPids[p] = pid;
-								printf("<%s:%u>: Adding new pid to DB, in index %d, found pid 0x%x\n",sock->ipAddress,sock->sin_port,p,pid);
+								printf("<%s:%u>:(pes-%d): Adding new pid to DB, in index %d, pid 0x%x\n",sock->ipAddress,sock->sin_port,pes,p,pid);
 								break;
 							}
 
@@ -782,9 +795,20 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 
 				}
 			} else {
-				printf(" failed to find %.2x %.2x %.2x\n", data[0], data[1] , data[2]);
+        uint8_t* temp = data -42;
+        printf("parsing failed\n");
+        for (int k=0; k <20; k++)
+        {
+          printf("[%d] 0x%x | ",k,temp[k]);
+        }
+        printf("\n");
+        //return;
+        exit(34);
+//				printf("failed to find %.2x %.2x %.2x\n", data[0], data[1] , data[2]);
 			}
 		}
+    if(newPidInPacket)
+      printf(".\n");
 
 }
 
@@ -796,7 +820,7 @@ static void printdummyInfo(RXSock* sock)
 
 static inline void printST2022Info(struct RXSock* sock)
 {
-	printf("<%s:%u>: received %d packets, %u drops, errono %s\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop, strerror(errno));
+	printf("<%s:%u>: received %d packets, %u drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 }
@@ -815,10 +839,12 @@ static inline void printMpegTsInfo(RXSock* sock)
 
 }
 
+
 void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 {
 	data += 42;
 	for (size_t k = 0; k < packets; k++) {
+    printf("packet %lu\n",k);
 		checkMpegTsPacket(data,  sock);
 		data += 2048;
 		}
@@ -831,84 +857,105 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 }
 
 
+#define GVSP_PT_INIT -1
+#define GVSP_PT_TRAILER 2
+#define GVSP_PT_LEADER  1
+#define GVSP_PT_PAYLOAD 3
 
-/*
-void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock)
+static inline void printGvspInfo(RXSock* sock)
 {
-	uint64_t lastBlockId = sock->lastBlockId;
-	for (size_t k = 0; k < packets; k++) {
-		// skip mac IP and UDP hdr
-		sock->rxCount++;
-		data += 42;
-		if (((data[4] & 0x80) == 0x0)) {
-			// EL == 0
-			uint32_t blockId = htons(*(uint16_t *) (((uint8_t*) data) + 2));
-			uint32_t packetId = htons((*(uint32_t *) (((uint8_t*) data) + 5) >> 8));
-			if (blockId == lastBlockId) {
-				uint32_t LostCount = (packetId + 0x1000000 - sock->LastSequenceNumber - 1) & 0xFFFFFF;
-				if (sock->LastSequenceNumber >= 0)
-					sock->rxDrop += LostCount;
-				sock->LastSequenceNumber = packetId;
+	printf("GVSP<%s:%u>: received %d packets, %u drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
+	sock->rxCount = 0;
+	sock->rxDrop = 0;
 
-			} else // new block
-			{
-				if ((blockId == (lastBlockId + 1)) ||
-				    ((lastBlockId = 0xFFFF) && (blockId == 1))) {
-					// no block drops
-					if ((packetId > 0) &&
-					    (sock->LastSequenceNumber >= 0)) {
-						sock->rxDrop += packetId;
-					}
-
-				} else {
-					// block drop
-					sock->rxDrop += 0x0100000000;
-				}
-				sock->LastSequenceNumber = packetId;
-				sock->lastBlockId = blockId;
-			}
-		} else {
-			// EL =1
-			uint32_t blockIdmsb = htons(*(uint32_t *) (((uint8_t*) data) + 8));
-			uint32_t blockIdlsb = htons(*(uint32_t *) (((uint8_t*) data) + 12));
-			uint64_t blockid64 = ((((uint64_t) blockIdmsb) << 32) |
-						blockIdlsb);
-			uint32_t packetId = htons(*(uint32_t *) (((uint8_t*) data) + 16));
-
-			if (blockid64 == lastBlockId) {
-				uint64_t LostCount = (packetId + 0x1000000 - sock->LastSequenceNumber - 1) & 0xFFFFFF;
-				if (sock->LastSequenceNumber >= 0)
-					sock->rxDrop += LostCount;
-				sock->LastSequenceNumber = packetId;
-
-			} else { // new block
-				if ((blockid64 == (lastBlockId + 1)) ||
-				    ((lastBlockId = 0xFFFF) && (blockid64 == 1))) {
-					// no block drops
-					if ((packetId > 0) &&
-					    (sock->LastSequenceNumber >= 0)) {
-						sock->rxDrop += packetId;
-					}
-				} else {
-					// block drop
-					sock->rxDrop += 0x0100000000000;
-				}
-				sock->LastSequenceNumber = packetId;
-				sock->lastBlockId = blockid64;
-			}
-
-		}
-		// skip to the end of the stride
-		data += (8192 - 42);
-	}
-	uint64_t currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
-		printf("%d pps %d drop errono %s\n", (int) sock->rxCount,
-				(int) sock->rxDrop, strerror(errno));
-		sock->rxCount = 0;
-		sock->rxDrop = 0;
-		sock->statTime = currentTime + 5000000;
-	}
 
 }
-*/
+
+
+void checkGVSPV2packets(uint8_t* data, size_t packets, RXSock* sock)
+{
+	data += 42;
+	for (size_t k = 0; k < packets; k++) {
+    printf("packet %lu\n",k);
+		checkGVSPV2packet(data,  sock);
+		data += 8192;
+		}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > sock->statTime) {
+		printGvspInfo(sock);
+		printf("check cc errors\n");
+		sock->statTime = currentTime + PRINT_PERIOD;
+	}
+}
+
+
+void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
+{
+  uint32_t lastPacketId = sock->LastSequenceNumber;
+  int lastPacketType = sock->lastPacketType;
+  uint32_t status_block_id = htonl(*((uint32_t *) data));
+  uint32_t e_packet_id  = htonl(*((uint32_t *) &data[4]));
+  uint32_t status = status_block_id >> 16;
+  uint32_t block_id = status_block_id = 0xFFFF;
+  uint32_t packet_id = e_packet_id & 0xFFFFFF;
+  int packet_type = ((e_packet_id & 0x0F000000 ) >> 24);
+  sock->rxCount++;
+  if (status != 0x0)
+  {
+      printf("GVSP found bad status %u\n",status);
+      return;
+  }
+
+  sock->rxCount++;
+	if ( lastPacketType == GVSP_PT_PAYLOAD ){
+    //block id should not increment and packet id should be increment in one packet type can be payload or trailer
+	    if ( block_id != (uint32_t)sock->lastBlockId ){
+	      printf("GVSP lost block(s) [%d -%d]\n",block_id, sock->lastBlockId);
+	      sock->rxDrop += 1000000;
+	    	}
+	    if ((packet_id != lastPacketId+1 ) && (packet_id != ((lastPacketId+2) & 0xFFFFFF))){
+	        sock->rxDrop+=  (packet_id-lastPacketId);
+	        }
+		    sock->lastBlockId = (int)block_id;
+		    sock->LastSequenceNumber =packet_id;
+		    sock->lastPacketType = packet_type;
+  }
+  else if (lastPacketType == GVSP_PT_INIT )
+  {
+    // this is the first packet captured
+    sock->lastBlockId = (int)block_id;
+    sock->LastSequenceNumber  =packet_id;
+    sock->lastPacketType = packet_type;
+    printf("GVSP: init parsing found block %u packet %u type %d\n",block_id,packet_id,packet_type);
+  }
+  else if (lastPacketType == GVSP_PT_TRAILER)
+  {
+    // current packet must be leader, block id should be incremented in 1, packet id must be zero
+    if ( packet_type != GVSP_PT_LEADER ){
+		printf("lost leader packet\n");
+		sock->rxDrop++;
+    	}
+	sock->lastBlockId = (int)block_id;
+    sock->LastSequenceNumber =packet_id;
+    sock->lastPacketType = packet_type;
+	
+  }
+  else // LEADER
+  {
+    // block id should not incrment , packet id should be increment in one and packet type must be payload
+	if ( block_id != (uint32_t)sock->lastBlockId ){
+	  printf("GVSP, expect first payload in pblock, but lost block(s) [%u -%u]\n",block_id, sock->lastBlockId);
+	  sock->rxDrop += 1000000;
+		}
+	if(packet_id != 1)
+		{
+		 sock->rxDrop+= packet_id-1;
+		}
+	sock->lastBlockId = (int)block_id;
+    sock->LastSequenceNumber =packet_id;
+    sock->lastPacketType = packet_type;	
+
+  }
+
+}
+
