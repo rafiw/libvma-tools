@@ -46,7 +46,8 @@
 
 
 #define MAX_PIDS_TS 256
-#define MAX_SOCKETS_THREAD 128
+#define MAX_SOCKETS_THREAD 		256
+#define PRINT_PERIOD 			5000000
 
 //#define USE_MPEG 1
 int (*vma_recvmmsg)(int, void *, int, int, void *);
@@ -75,25 +76,22 @@ typedef void (*validatePackets)(uint8_t*, size_t, struct RXSock*);
 typedef void (*validatePacket)(uint8_t*, struct RXSock*);
 typedef void (*printInfo)(struct RXSock*);
 
-void checkpacket(uint8_t* data, struct RXSock* sock);
-void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock);
-static void printdummyInfo(RXSock* sock);
-static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock);
-static inline void printMpegTsInfo(RXSock* sock);
 
 struct RXSock {
-	int		fd;
-	int		ring_fd;
+
 	uint64_t	rxCount;
 	uint64_t	rxDrop;
 	uint64_t	statTime;
 	uint64_t	lastBlockId;
 	int		LastSequenceNumber;
 	int		index;
+	int		fd;
+	int		ring_fd;
+	uint16_t 		sin_port;
 	struct ip_mreqn	mc;
 	receivedPid rPids[MAX_PIDS_TS];
 	pesinfo		*pidTable;
-	struct sockaddr_in sock_addr;
+	char ipAddress[INET_ADDRSTRLEN];
 	validatePacket fvalidatePacket;
 	validatePackets fvalidatePackets;
 	printInfo       fprintinfo;
@@ -109,10 +107,18 @@ struct RXThread {
 
 
 
+static void checkMpegTsPacket (uint8_t* data, struct RXSock* sock);
+static void checkST2022Packet(uint8_t* data, struct RXSock* sock);
 
-void checkMpegTsPackets(uint8_t* data,size_t packets,struct RXSock* sock);
-void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
-void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void checkMpegTsPackets(uint8_t* data,size_t packets,struct RXSock* sock);
+//static void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void checkpacket(uint8_t* data, struct RXSock* sock);
+static void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void printdummyInfo(RXSock* sock);
+static void printMpegTsInfo(RXSock* sock);
+static inline void printST2022Info(struct RXSock* sock);
+
 
 
 /******************************************************************************/
@@ -303,7 +309,7 @@ void *run_copy(void *arg)
 	printf("starting rx\n");
 	while (1) {
 		for (int i = 0; i < t->sock_len; i++) {
-			for (int j = 0; j < 100; j++) {
+			for (int j = 0; j < 10; j++) {
 				int size = vma_recv(t->sock[i]->fd, Dump, 2048,
 						MSG_NOSIGNAL);
 				if (size > 0)
@@ -337,10 +343,11 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_mp_t completion;
-	for (int iter = 0; iter < 1000; iter++) {
+	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->sock_len; i++) {
 			for (int j = 0; j < 10; j++) {
 				completion.packets = 0;
+				flags = MSG_DONTWAIT;
 				int res = vma_api->vma_cyclic_buffer_read(
 						t->sock[i]->ring_fd,
 						&completion, t->min_s, t->max_s,
@@ -398,12 +405,16 @@ void *run_zero(void *arg)
 				if (size > 0 && ((data[0] & 0xC0) == 0x80)
 						&& ((data[1] & 0x7f) == 0x62)) {
 					t->sock[i]->fvalidatePacket(data, t->sock[i]);
+
+
 					if (MSG_VMA_ZCOPY & flags) {
 						vma_api->free_packets(t->sock[i]->fd,
 								((struct vma_packets_t*) Dump)->pkts,
 								((struct vma_packets_t*) Dump)->n_packet_num);
 					}
 				} else {
+					uint64_t currentTime = time_get_usec();
+					if (currentTime	> t->sock[i]->statTime)
 					t->sock[i]->fprintinfo(t->sock[i]);
 				}
 			}
@@ -451,10 +462,9 @@ int main(int argc, char *argv[])
 	struct RXSock fds[1024];
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 
-	if (argc < 6) {
-		printf("usage: dropDemo eth0 [file of ip port] fds_num threads_num "
-			"sceanrio [0->basic, 1->zero copy, 2-> cyclic buffer] "
-			"sleep [min packet] [max packet] [1 ->use vma]\n");
+	if (argc < 3) {
+		printf("usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
+			"sleep [min packet] [max packet] use_vma\n");
 		printf("   logs packet drops\n");
 		printf("   \n");
 		exit(-1);
@@ -479,6 +489,11 @@ int main(int argc, char *argv[])
 		}
 		ip_vect.push_back(addr);
 	}
+	/*
+	int port = 2000;
+	if (argc > 3) {
+		port = atoi(argv[3]);
+	}*/
 	if (argc > 3) {
 		sock_num = atoi(argv[3]);
 	}
@@ -490,6 +505,9 @@ int main(int argc, char *argv[])
 		threads_num = atoi(argv[4]);
 	}
 	scenario = 2;
+	/*if (argc > 6) {
+		scenario = atoi(argv[6]);
+	}*/
 	if (argc > 5) {
 		scenario = atoi(argv[5]);
 	}
@@ -504,17 +522,17 @@ int main(int argc, char *argv[])
 	int max_s = 5000;
 	if (argc > 8) {
 		max_s = atoi(argv[8]);
+
 	}
+	printf("running checker with:\n\tfds: %d\n \tthreads:%d "
+		"\n\tscenario: %s \n\tmin packet %d\n\tmax packet %d "
+		"\n\tsleep_time %d\n",
+		sock_num, threads_num, get_sceanrio_str(scenario),
+		min_s, max_s, sleep_time);
 	int use_vma = 1;
 	if (argc > 9) {
 		use_vma = atoi(argv[9]);
 	}
-	printf("running checker with:\n\tfds: %d\n \tthreads:%d "
-		"\n\tscenario: %s \n\tmin packet %d\n\tmax packet %d "
-		"\n\tsleep_time %d",
-		sock_num, threads_num, get_sceanrio_str(scenario),
-		min_s, max_s, sleep_time);
-
 	//load VMA so
 	if (sock_num < threads_num) {
 		printf("Error - you need to have at least the same thread as sockets. "
@@ -544,6 +562,7 @@ int main(int argc, char *argv[])
 	}
 	for (int i = 0; i < sock_num; i++) {
 		struct ip_mreqn mc;
+		usleep(100);
 		fds[i].fd = OpenRxSocket(&ip_vect[i], 0, argv[1], &mc);
 		if (fds[i].fd <= 0) {
 			printf("Error - rx open failed. %d\n", i);
@@ -554,22 +573,23 @@ int main(int argc, char *argv[])
 		fds[i].lastBlockId = -1;
 		fds[i].rxCount = 0;
 		fds[i].rxDrop = 0;
-		fds[i].statTime = time_get_usec() + 5000000;
+		fds[i].statTime = time_get_usec() + 1000*i;
 		fds[i].index = i;
 		fds[i].fvalidatePacket = checkpacket;
 		fds[i].fvalidatePackets = checkpackets;
 		fds[i].fprintinfo = printdummyInfo;
 
-		// todo: do i need memcpy?
-		fds[i].sock_addr = ip_vect[i];
+		fds[i].sin_port = ntohs(ip_vect[i].sin_port);
+		inet_ntop(AF_INET, &(ip_vect[i].sin_addr), fds[i].ipAddress, INET_ADDRSTRLEN);
 		for (int j = 0; j < MAX_PIDS_TS ; j++) {
 			fds[i].rPids[j].pid = 0x1FFF;
-		}
+			}
 		fds[i].pidTable = new pesinfo[8192];
 		for (int j = 0; j < 8192; j++) {
 			fds[i].pidTable[j].lastcc = -1;
 			fds[i].pidTable[j].rxDrop = 0;
 			fds[i].pidTable[j].rxCount =0;
+
 		}
 	}
 	// Distribute fds to threads
@@ -639,7 +659,9 @@ static inline void checkST2022Packet(uint8_t* data, struct RXSock* sock)
 			sock->rxDrop += LostCount;
 
 		sock->LastSequenceNumber = SequenceNumber;
-	} else {
+	}
+/*
+	else {
 		uint64_t currentTime = time_get_usec();
 		if (currentTime > sock->statTime) {
 			printf("%d pps %d drop errono %s\n",
@@ -648,18 +670,13 @@ static inline void checkST2022Packet(uint8_t* data, struct RXSock* sock)
 					strerror(errno));
 			sock->rxCount = 0;
 			sock->rxDrop = 0;
-			sock->statTime = currentTime + 5000000;
+			sock->statTime = currentTime + PRINT_PERIOD;
 			}
 		}
+*/
 
 }
 
-static inline void printST2022Info(struct RXSock* sock)
-{
-	printf("%d pps %d drop errono %s\n", (int) sock->rxCount / 5,(int) sock->rxDrop, strerror(errno));
-	sock->rxCount = 0;
-	sock->rxDrop = 0;
-}
 
 void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
@@ -673,92 +690,101 @@ void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock)
 	uint64_t currentTime = time_get_usec();
 	if (currentTime > sock->statTime) {
 		printST2022Info(sock);
-		sock->statTime = currentTime + 5000000;
+		sock->statTime = currentTime + PRINT_PERIOD;
 	}
-}
 
-void checkpacket(uint8_t* data, struct RXSock* sock) {
+}
+void checkpacket(uint8_t* data, struct RXSock* sock)
+{
 	uint8_t* pdata = data;
 	bool isMPEGTS = true;
 	bool isST2022 = false;
-	struct sockaddr_in ipv4 = sock->sock_addr;
-	char ipAddress[INET_ADDRSTRLEN];
-	inet_ntop(AF_INET, &(ipv4.sin_addr), ipAddress, INET_ADDRSTRLEN);
-
+	printf("check_packet\n");
 	// check if this is mpeg2 TS
 	// skip ip udp
+	pdata+=42;
 	for (int pes = 0; pes < 7; pes++, pdata += 188) {
 		if (0x47 != *pdata){
 			// this is not MPEG TS...
 			isMPEGTS = false;
 			break;
+			}
 		}
-	}
-	if (isMPEGTS) {
-		printf("Socket address %s, found MPEG Ts packets, will be parsed as Mpeg Ts\n", ipAddress);
+	if (isMPEGTS)
+		{
+		printf("Socket address %s:%u, found MPEG Ts packets, will be parsed as Mpeg Ts\n", sock->ipAddress,sock->sin_port);
 		sock->fvalidatePacket = checkMpegTsPacket;
 		sock->fvalidatePackets = checkMpegTsPackets;
 		sock->fprintinfo = printMpegTsInfo;
 		return;
-	}
+		}
+	pdata = data;
+	// check if this is ST2022
+	pdata += 42;
 	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
 	if (((pdata[0] & 0xC0) == 0x80) && ((pdata[1] & 0x7f) == 0x62)) {
 		isST2022 = true;
-	}
+		}
 
-	if (isST2022) {
-		printf("Socket address %s, found ST2022 packets, will be parsed as ST2022\n", ipAddress);
+	if (isST2022)
+		{
+		printf("Socket address %s:%u, found 2022 packets, will be parsed as ST2022\n", sock->ipAddress,sock->sin_port);
 		sock->fvalidatePacket = checkST2022Packet;
 		sock->fvalidatePackets = checkST2022Packets;
 		sock->fprintinfo = printST2022Info;
 		return;
-	}
-	printf("Socket address %s, failed to parse the packet format\n", ipAddress);
+		}
+	printf("Socket address %s:%u, Failed to parse packet format\n", sock->ipAddress,sock->sin_port);
+
+
 }
 
 void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
-	data+=42;
+	(void)packets;
 	return checkpacket(data,sock);
 }
+
+
 
 static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 {
 	uint16_t pid;
-	// skip mac IP and UDP hdr
-	uint8_t lastHeaderByte;
-	sock->rxCount++;
-	for (int pes = 0; pes < 7; pes++, data += 188) {
-		uint32_t tsheader = htonl(*((uint32_t *) data));
-		pid = (uint16_t)((tsheader & 0x1FFF00) >>8);
-		if (0x47 == *data) {
-			if (pid != 0x1FFF) {
-				lastHeaderByte = data[3];
-				if (sock->pidTable[pid].lastcc >= 0) {
-					int adaptationF = (lastHeaderByte & 0x30);
-					if (adaptationF != 0x20) {
-						sock->pidTable[pid].lastcc = ((sock->pidTable[pid].lastcc + 1) 	& 0xF);
-						if (0 == (sock->pidTable[pid].lastcc & 0xF) && (0 != (lastHeaderByte & 0xF))) {
-							sock->pidTable[pid].rxDrop += 15; // fixme
-							sock->pidTable[pid].lastcc = (lastHeaderByte & 0xF);
+		// skip mac IP and UDP hdr
+		sock->rxCount++;
+		for (int pes = 0; pes < 7; pes++, data += 188) {
+
+				uint32_t tsheader = htonl(*((uint32_t *) data));
+				pid = (uint16_t)((tsheader & 0x1FFF00) >>8);
+				if (0x47 == *data) {
+					if (pid != 0x1FFF) {
+					if (sock->pidTable[pid].lastcc >= 0) {
+						uint32_t adaptationF = (tsheader & 0x30);
+						if ((adaptationF != 0x20) &&  (adaptationF != 0x0)){
+							sock->pidTable[pid].lastcc = ((sock->pidTable[pid].lastcc + 1) 	& 0xF);
+							if ((0== (sock->pidTable[pid].lastcc & 0xF)) && (0 != (tsheader & 0xF))) {
+								sock->pidTable[pid].rxDrop += 1; // fixme
+								sock->pidTable[pid].lastcc = (tsheader & 0xF);
+							}
+						}
+					} else { // first time
+						sock->pidTable[pid].lastcc = (tsheader & 0xF);
+						for (int p = 0; p < MAX_PIDS_TS; p++) {
+							if (sock->rPids[p].pid	== 0x1FFF) {
+								sock->rPids[p].pid = pid;
+					                        printf("adding new pid to DB, in index %d, found pid 0x%x\n",p,pid);
+								break;
+							}
+
 						}
 					}
-				} else { // first time
-					printf("New PID found: 0x%.4X\n", pid);
-					sock->pidTable[pid].lastcc = lastHeaderByte& 0xF;
-					for (int p = 0; p < MAX_PIDS_TS; p++) {
-						if (sock->rPids[p].pid	== 0x1FFF) {
-							sock->rPids[p].pid = pid;
-							printf("adding new pid to DB, in index %d, found pid 0x%x\n",p,pid);
-							break;
-						}
-					}
+
 				}
+			} else {
+				printf(" failed to find %.2x %.2x %.2x\n", data[0], data[1] , data[2]);
 			}
-		} else {
-			printf(" failed to find %.2x %.2x %.2x\n", data[0], data[1] , data[2]);
 		}
-	}
+
 }
 
 
@@ -767,24 +793,23 @@ static void printdummyInfo(RXSock* sock)
 
 }
 
+static inline void printST2022Info(struct RXSock* sock)
+{
+	printf("<%s:%u>: received %d packets, %u drops, errono %s\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop, strerror(errno));
+	sock->rxCount = 0;
+	sock->rxDrop = 0;
+}
 static inline void printMpegTsInfo(RXSock* sock)
 {
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
-		for (int p = 0; p < MAX_PIDS_TS; p++) {
-			if (sock->rPids[p].pid != 0x1FFF
-					&& sock->pidTable[sock->rPids[p].pid].rxDrop) {
-				printf("Pid 0x%x, 0x%d cc errors | ",
-						sock->rPids[p].pid,
-						sock->pidTable[sock->rPids[p].pid].rxDrop);
-				sock->pidTable[sock->rPids[p].pid].rxDrop = 0;
-				sock->pidTable[sock->rPids[p].pid].rxCount = 0;
+	printf("<%s:%u>: received %d packets", sock->ipAddress,sock->sin_port,(int) sock->rxCount);
+	for (int p = 0; p < MAX_PIDS_TS; p++) {
+				if (sock->rPids[p].pid != 0x1FFF) {
+					printf("Pid 0x%x, 0x%d cc errors | ", sock->rPids[p].pid,sock->pidTable[sock->rPids[p].pid].rxDrop);
+					sock->pidTable[sock->rPids[p].pid].rxDrop = 0;
+					sock->pidTable[sock->rPids[p].pid].rxCount = 0;
+				}
 			}
-		}
-		sock->statTime = currentTime + 5000000;
-		printf("got pps %d\n",(int)sock->rxCount);
-		sock->rxCount = 0;
-	}
+		printf("\n");
 
 }
 
@@ -794,11 +819,18 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 	for (size_t k = 0; k < packets; k++) {
 		checkMpegTsPacket(data,  sock);
 		data += 2048;
+		}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > sock->statTime) {
+		printMpegTsInfo(sock);
+		printf("check cc errors\n");
+		sock->statTime = currentTime + PRINT_PERIOD;
 	}
-	printMpegTsInfo(sock);
 }
 
 
+
+/*
 void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
 	uint64_t lastBlockId = sock->lastBlockId;
@@ -877,4 +909,4 @@ void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock)
 	}
 
 }
-
+*/
