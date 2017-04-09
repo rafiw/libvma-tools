@@ -68,9 +68,6 @@ struct pesinfo {
 	uint64_t	rxCount;
 };
 
-struct receivedPid{
-	uint16_t pid;
-};
 
 typedef void (*validatePackets)(uint8_t*, size_t, struct RXSock*);
 typedef void (*validatePacket)(uint8_t*, struct RXSock*);
@@ -89,7 +86,7 @@ struct RXSock {
 	int		ring_fd;
 	uint16_t 		sin_port;
 	struct ip_mreqn	mc;
-	receivedPid rPids[MAX_PIDS_TS];
+	uint16_t rPids[MAX_PIDS_TS];
 	pesinfo		*pidTable;
 	char ipAddress[INET_ADDRSTRLEN];
 	validatePacket fvalidatePacket;
@@ -190,7 +187,7 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
 		}
 	}
 	// strideRQ
-
+#if 0
 	if (scenario == 2) {
 		struct vma_api_t *vma_api = vma_get_api();
 		if (vma_api == NULL) {
@@ -217,7 +214,7 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
 		vma_setsockopt(RxSocket, SOL_SOCKET, SO_VMA_RING_ALLOC_LOGIC,
 				&profile, sizeof(profile));
 	}
-
+#endif
 	// bind to socket
 	i_ret = vma_bind(RxSocket, (struct sockaddr *)addr, sizeof(struct sockaddr));
 	if (i_ret < 0) {
@@ -315,7 +312,11 @@ void *run_copy(void *arg)
 				if (size > 0)
 					t->sock[i]->fvalidatePacket(Dump, t->sock[i]);
 			}
-			t->sock[i]->fprintinfo(t->sock[i]);
+			uint64_t currentTime = time_get_usec();
+			if (currentTime > t->sock[i]->statTime) {
+				t->sock[i]->fprintinfo(t->sock[i]);
+				t->sock[i]->statTime = currentTime + PRINT_PERIOD;
+			}
 		}
 		usleep(sleep_time);
 	}
@@ -582,7 +583,7 @@ int main(int argc, char *argv[])
 		fds[i].sin_port = ntohs(ip_vect[i].sin_port);
 		inet_ntop(AF_INET, &(ip_vect[i].sin_addr), fds[i].ipAddress, INET_ADDRSTRLEN);
 		for (int j = 0; j < MAX_PIDS_TS ; j++) {
-			fds[i].rPids[j].pid = 0x1FFF;
+			fds[i].rPids[j] = 0x1FFF;
 			}
 		fds[i].pidTable = new pesinfo[8192];
 		for (int j = 0; j < 8192; j++) {
@@ -699,7 +700,6 @@ void checkpacket(uint8_t* data, struct RXSock* sock)
 	uint8_t* pdata = data;
 	bool isMPEGTS = true;
 	bool isST2022 = false;
-	printf("check_packet\n");
 	// check if this is mpeg2 TS
 	// skip ip udp
 	pdata+=42;
@@ -760,6 +760,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 					if (pid != 0x1FFF) {
 					if (sock->pidTable[pid].lastcc >= 0) {
 						uint32_t adaptationF = (tsheader & 0x30);
+						sock->pidTable[pid].rxCount++;
 						if ((adaptationF != 0x20) &&  (adaptationF != 0x0)){
 							sock->pidTable[pid].lastcc = ((sock->pidTable[pid].lastcc + 1) 	& 0xF);
 							if ((0== (sock->pidTable[pid].lastcc & 0xF)) && (0 != (tsheader & 0xF))) {
@@ -770,9 +771,9 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 					} else { // first time
 						sock->pidTable[pid].lastcc = (tsheader & 0xF);
 						for (int p = 0; p < MAX_PIDS_TS; p++) {
-							if (sock->rPids[p].pid	== 0x1FFF) {
-								sock->rPids[p].pid = pid;
-					                        printf("adding new pid to DB, in index %d, found pid 0x%x\n",p,pid);
+							if (sock->rPids[p] == 0x1FFF) {
+								sock->rPids[p] = pid;
+								printf("<%s:%u>: Adding new pid to DB, in index %d, found pid 0x%x\n",sock->ipAddress,sock->sin_port,p,pid);
 								break;
 							}
 
@@ -801,12 +802,13 @@ static inline void printST2022Info(struct RXSock* sock)
 }
 static inline void printMpegTsInfo(RXSock* sock)
 {
-	printf("<%s:%u>: received %d packets", sock->ipAddress,sock->sin_port,(int) sock->rxCount);
+	printf("<%s:%u>: <PID>: <recieved> <CC ERRORS>\n", sock->ipAddress,sock->sin_port);
 	for (int p = 0; p < MAX_PIDS_TS; p++) {
-				if (sock->rPids[p].pid != 0x1FFF) {
-					printf("Pid 0x%x, 0x%d cc errors | ", sock->rPids[p].pid,sock->pidTable[sock->rPids[p].pid].rxDrop);
-					sock->pidTable[sock->rPids[p].pid].rxDrop = 0;
-					sock->pidTable[sock->rPids[p].pid].rxCount = 0;
+				int pid = sock->rPids[p];
+				if (pid != 0x1FFF) {
+					printf("\t0x%x:,%lu %d\n", (int)pid,sock->pidTable[pid].rxCount, sock->pidTable[pid].rxDrop);
+					sock->pidTable[pid].rxDrop = 0;
+					sock->pidTable[pid].rxCount = 0;
 				}
 			}
 		printf("\n");
