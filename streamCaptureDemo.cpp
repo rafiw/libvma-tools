@@ -47,7 +47,9 @@
 
 #define MAX_PIDS_TS 256
 #define MAX_SOCKETS_THREAD 		256
-#define PRINT_PERIOD 			5000000
+#define PRINT_PERIOD_SEC		5
+#define PRINT_PERIOD 			1000000 * PRINT_PERIOD_SEC
+
 
 int (*vma_recvmmsg)(int, void *, int, int, void *);
 int (*vma_recv)(int, void *, int, int);
@@ -346,6 +348,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_mp_t completion;
+
 	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->sock_len; i++) {
 			for (int j = 0; j < 10; j++) {
@@ -363,7 +366,7 @@ void *run_stride(void *arg)
 					continue;
 				}
 				data = ((uint8_t *) completion.payload_ptr);
-				printf("run_stride: parsing %d packets\n",(int)completion.packets);
+				//printf("run_stride: parsing %d packets\n",(int)completion.packets);
 				t->sock[i]->fvalidatePackets(data, completion.packets, t->sock[i]);
 			}
 		}
@@ -629,23 +632,21 @@ int main(int argc, char *argv[])
 
 static inline void checkRtpPacket(uint8_t* data, struct RXSock* sock)
 {
-	uint32_t rtpHeader;
 	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
 	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
 		sock->rxCount++;
-		g_totalPacketsProcessed++;
-		rtpHeader = htonl((uint32_t) (*(uint32_t*) (data)));
-		uint16_t SequenceNumber = (uint16_t) (rtpHeader & 0xFFFF);
-		int LostCount = (SequenceNumber - (uint16_t) sock->LastSequenceNumber - 1);
-		//if (LostCount > 0)
-		//  printf("check RTP lostcount %d packet sn %u last sn %d\n",LostCount,SequenceNumber,sock->LastSequenceNumber);
+		uint32_t SequenceNumber = htons(*(uint16_t *) (((uint8_t*) data) + 2));
+		uint32_t LostCount = (SequenceNumber + 0x10000
+				- sock->LastSequenceNumber - 1) & 0xFFFF;
 		if (sock->LastSequenceNumber >= 0)
 			sock->rxDrop += LostCount;
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
 		reportErrorPacket(data, sock);
 	}
+
 }
+
 
 
 void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock)
@@ -802,7 +803,7 @@ static void printdummyInfo(RXSock* sock)
 
 static inline void printRtpInfo(struct RXSock* sock)
 {
-	printf("<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
+	printf("<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount/PRINT_PERIOD_SEC,(int) sock->rxDrop);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 }
@@ -815,7 +816,7 @@ static inline void printMpegTsInfo(RXSock* sock)
 			int pid = sock->rPids[p];
 			if (pid != 0x1FFF) {
 				printf("\t0x%x:,%lu %d\n", (int) pid,
-					sock->pidTable[pid].rxCount,
+					sock->pidTable[pid].rxCount/PRINT_PERIOD_SEC,
 					sock->pidTable[pid].rxDrop);
 				sock->pidTable[pid].rxDrop = 0;
 				sock->pidTable[pid].rxCount = 0;
@@ -848,7 +849,7 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 
 static inline void printGvspInfo(RXSock* sock)
 {
-	printf("GVSP<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
+	printf("GVSP<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount/PRINT_PERIOD_SEC,(int) sock->rxDrop);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 }
