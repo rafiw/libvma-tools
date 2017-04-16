@@ -49,7 +49,6 @@
 #define MAX_SOCKETS_THREAD 		256
 #define PRINT_PERIOD 			5000000
 
-//#define USE_MPEG 1
 int (*vma_recvmmsg)(int, void *, int, int, void *);
 int (*vma_recv)(int, void *, int, int);
 int (*vma_socket)(int, int, int);
@@ -61,10 +60,11 @@ int (*vma_close)(int);
 int sock_num;
 int threads_num;
 int sleep_time;
+unsigned int g_totalPacketsProcessed =0;
 
 struct pesinfo {
 	int		lastcc;
-	uint32_t	rxDrop;
+	int		rxDrop;
 	uint64_t	rxCount;
 };
 
@@ -75,9 +75,8 @@ typedef void (*printInfo)(struct RXSock*);
 
 
 struct RXSock {
-
 	uint64_t	rxCount;
-	uint64_t	rxDrop;
+	int		rxDrop;
 	uint64_t	statTime;
 	int		lastBlockId;
 	int		LastSequenceNumber;
@@ -85,6 +84,7 @@ struct RXSock {
 	int		index;
 	int		fd;
 	int		ring_fd;
+	uint16_t	rtpPayloadType;
 	uint16_t	sin_port;
 	struct ip_mreqn	mc;
 	uint16_t	rPids[MAX_PIDS_TS];
@@ -105,18 +105,18 @@ struct RXThread {
 
 
 static void checkpacket(uint8_t* data, struct RXSock* sock);
-static void checkMpegTsPacket (uint8_t* data, struct RXSock* sock);
-static void checkST2022Packet(uint8_t* data, struct RXSock* sock);
+static void checkMpegTsPacket(uint8_t* data, struct RXSock* sock);
+static void checkRtpPacket(uint8_t* data, struct RXSock* sock);
 static void checkGVSPV2packet(uint8_t* data, struct RXSock* sock);
 
 static void checkMpegTsPackets(uint8_t* data,size_t packets,struct RXSock* sock);
 static void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
-static void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock);
+static void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock);
 static void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock);
-
+static void reportErrorPacket(uint8_t* packet,struct RXSock* sock);
 static void printdummyInfo(RXSock* sock);
 static void printMpegTsInfo(RXSock* sock);
-static inline void printST2022Info(struct RXSock* sock);
+static inline void printRtpInfo(struct RXSock* sock);
 static inline void printGvspInfo(struct RXSock* sock);
 
 
@@ -136,8 +136,7 @@ int scenario;
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
-static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
-		struct ip_mreqn *mc)
+static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device, struct ip_mreqn *mc)
 {
 	int i_ret;
 	struct timeval timeout = { 0, 1 };
@@ -209,7 +208,7 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
 			exit(-1);
 		}
 		vma_ring_alloc_logic_attr profile;
-		profile.comp_mask = 11;
+		profile.comp_mask = 13;
 		profile.engress = 0;
 		profile.ingress = 1;
 		profile.ring_profile_key = p;
@@ -364,8 +363,8 @@ void *run_stride(void *arg)
 					continue;
 				}
 				data = ((uint8_t *) completion.payload_ptr);
-		        printf("validating %lu packets\n",completion.packets);
-				t->sock[i]->fvalidatePackets(data, (int)completion.payload_length / 2048, t->sock[i]);
+				printf("run_stride: parsing %d packets\n",(int)completion.packets);
+				t->sock[i]->fvalidatePackets(data, completion.packets, t->sock[i]);
 			}
 		}
 		usleep(sleep_time);
@@ -442,19 +441,6 @@ const char* get_sceanrio_str(int scen)
 	}
 }
 
-const char* get_validation_func_str(int func)
-{
-	switch (func) {
-	case 1:
-		return "ST2022";
-	case 2:
-		return "GVSPV2";
-	case 3:
-		return "MpegTs";
-	default:
-		return "ERROR";
-	}
-}
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
@@ -494,15 +480,10 @@ int main(int argc, char *argv[])
 		}
 		ip_vect.push_back(addr);
 	}
-	/*
-	int port = 2000;
-	if (argc > 3) {
-		port = atoi(argv[3]);
-	}*/
 	if (argc > 3) {
 		sock_num = atoi(argv[3]);
 	}
-	if (sock_num != (int) ip_vect.size()) {
+	if (sock_num != (int)ip_vect.size()) {
 		printf("ip list given but not the same as sock_num using first %d\n",
 			sock_num);
 	}
@@ -510,16 +491,14 @@ int main(int argc, char *argv[])
 		threads_num = atoi(argv[4]);
 	}
 	scenario = 2;
-	/*if (argc > 6) {
-		scenario = atoi(argv[6]);
-	}*/
 	if (argc > 5) {
 		scenario = atoi(argv[5]);
 	}
 	if (argc > 6) {
 		sleep_time = atoi(argv[6]);
-	} else
+	} else {
 		sleep_time = 1;
+	}
 	int min_s = 500;
 	if (argc > 7) {
 		min_s = atoi(argv[7]);
@@ -527,7 +506,6 @@ int main(int argc, char *argv[])
 	int max_s = 5000;
 	if (argc > 8) {
 		max_s = atoi(argv[8]);
-
 	}
 	printf("running checker with:\n\tfds: %d\n \tthreads:%d "
 		"\n\tscenario: %s \n\tmin packet %d\n\tmax packet %d "
@@ -567,7 +545,6 @@ int main(int argc, char *argv[])
 	}
 	for (int i = 0; i < sock_num; i++) {
 		struct ip_mreqn mc;
-		usleep(100);
 		fds[i].fd = OpenRxSocket(&ip_vect[i], 0, argv[1], &mc);
 		if (fds[i].fd <= 0) {
 			printf("Error - rx open failed. %d\n", i);
@@ -650,195 +627,215 @@ int main(int argc, char *argv[])
 
 
 
-static inline void checkST2022Packet(uint8_t* data, struct RXSock* sock)
+static inline void checkRtpPacket(uint8_t* data, struct RXSock* sock)
 {
-
+	uint32_t rtpHeader;
 	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
-	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == 0x62)) {
+	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
 		sock->rxCount++;
-		uint32_t SequenceNumber = htons(*(uint16_t *) (((uint8_t*) data) + 2));
-		uint32_t LostCount = (SequenceNumber + 0x10000
-				- sock->LastSequenceNumber - 1)
-				& 0xFFFF;
+		g_totalPacketsProcessed++;
+		rtpHeader = htonl((uint32_t) (*(uint32_t*) (data)));
+		uint16_t SequenceNumber = (uint16_t) (rtpHeader & 0xFFFF);
+		int LostCount = (SequenceNumber - (uint16_t) sock->LastSequenceNumber - 1);
+		//if (LostCount > 0)
+		//  printf("check RTP lostcount %d packet sn %u last sn %d\n",LostCount,SequenceNumber,sock->LastSequenceNumber);
 		if (sock->LastSequenceNumber >= 0)
 			sock->rxDrop += LostCount;
-
 		sock->LastSequenceNumber = SequenceNumber;
+	} else {
+		reportErrorPacket(data, sock);
 	}
-/*
-	else {
-		uint64_t currentTime = time_get_usec();
-		if (currentTime > sock->statTime) {
-			printf("%d pps %d drop errono %s\n",
-					(int) sock->rxCount / 5,
-					(int) sock->rxDrop,
-					strerror(errno));
-			sock->rxCount = 0;
-			sock->rxDrop = 0;
-			sock->statTime = currentTime + PRINT_PERIOD;
-			}
-		}
-*/
-
 }
 
 
-void checkST2022Packets(uint8_t* data, size_t packets, struct RXSock* sock)
+void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
-	// skip mac IP and UDP hdr
 	data += 42;
 	for (size_t k = 0; k < packets; k++) {
-		checkST2022Packet(data,sock);
+		checkRtpPacket(data,sock);
 		// skip to the end of the stride
 		data += 2048;
 	}
 	uint64_t currentTime = time_get_usec();
 	if (currentTime > sock->statTime) {
-		printST2022Info(sock);
+		printRtpInfo(sock);
 		sock->statTime = currentTime + PRINT_PERIOD;
 	}
-
 }
+
 void checkpacket(uint8_t* data, struct RXSock* sock)
 {
 	uint8_t* pdata = data;
 	bool isMPEGTS = true;
-	bool isST2022 = false;
+	bool isRtp = false;
+	printf("%s data = 0x%lx\n",__func__,(unsigned long)data);
 	// check if this is mpeg2 TS
-	// skip ip udp
+	g_totalPacketsProcessed++;
 	for (int pes = 0; pes < 7; pes++, pdata += 188) {
-		if (0x47 != *pdata) {
+		if (0x47 != *pdata){
 			// this is not MPEG TS...
 			isMPEGTS = false;
 			break;
 		}
 	}
 	if (isMPEGTS) {
-		printf("Socket address %s:%u, found MPEG Ts packets, will be parsed as Mpeg Ts\n", sock->ipAddress,sock->sin_port);
+		printf("Socket address %s:%u, found MPEG Ts packets, will be parsed as Mpeg Ts\n",
+			sock->ipAddress, sock->sin_port);
 		sock->fvalidatePacket = checkMpegTsPacket;
 		sock->fvalidatePackets = checkMpegTsPackets;
 		sock->fprintinfo = printMpegTsInfo;
 		return;
 	}
 	pdata = data;
-	// check if this is ST2022
 	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
-	if (((pdata[0] & 0xC0) == 0x80) && ((pdata[1] & 0x7f) == 0x62)) {
-		isST2022 = true;
+	if ((pdata[0] & 0xC0) == 0x80) {
+		uint16_t payloadType = (pdata[1] & 0x7F);
+		sock->rtpPayloadType = payloadType;
+		switch (payloadType){
+		case 0x62: //98
+			printf("socket address %s:%u, Found RTP packet with raw video\n",sock->ipAddress,sock->sin_port);
+			break;
+		case 33:
+			printf("socket address %s:%u, Found RTP packet Mpeg2 TS\n",sock->ipAddress,sock->sin_port);
+			break;
+		case 26:
+			printf("socket address %s:%u, Found RTP packet with JPEG\n",sock->ipAddress,sock->sin_port);
+			break;
+		default:
+			printf("socket address %s:%u, Found RTP packet with payload Type %d\n",sock->ipAddress,sock->sin_port,sock->rtpPayloadType);
+		}
+		isRtp = true;
 	}
-
-	if (isST2022) {
-		printf("Socket address %s:%u, found 2022 packets, will be parsed as ST2022\n", sock->ipAddress,sock->sin_port);
-		sock->fvalidatePacket = checkST2022Packet;
-		sock->fvalidatePackets = checkST2022Packets;
-		sock->fprintinfo = printST2022Info;
+	if (isRtp) {
+		sock->fvalidatePacket = checkRtpPacket;
+		sock->fvalidatePackets = checkRtpPackets;
+		sock->fprintinfo = printRtpInfo;
 		return;
-	} else {
-		printf("Socket address %s:%u, found GVSPV2 packets, will be parsed as GVSPV2\n", sock->ipAddress,sock->sin_port);
+	}
+	if ((pdata[0]== 0 ) && ( pdata[1] ==0 )) {
 		sock->fvalidatePacket = checkGVSPV2packet;
 		sock->fvalidatePackets = checkGVSPV2packets;
-		sock->fprintinfo = printGvspInfo;		
+		sock->fprintinfo = printGvspInfo;
+		printf("Socket address %s:%u, will be parsed ad GVSP (default) format\n", sock->ipAddress,sock->sin_port);
+	} else {
+		printf("failed to parse packet, retry\n");
 	}
 }
 
 void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
-	(void)packets;
-	data += 42;
-	return checkpacket(data,sock);
+	checkpacket(data +42, sock);
+	return sock->fvalidatePackets(data, packets, sock);
 }
-
-
 
 static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 {
 	uint16_t pid;
-	int newPidInPacket=0;
 	// skip mac IP and UDP hdr
+	printf("%s data = 0x%lx\n", __func__, (unsigned long) data);
+	g_totalPacketsProcessed++;
 	sock->rxCount++;
 	for (int pes = 0; pes < 7; pes++, data += 188) {
 		uint32_t tsheader = htonl(*((uint32_t *) data));
-		pid = (uint16_t)((tsheader & 0x1FFF00) >>8);
+		pid = (uint16_t) ((tsheader & 0x1FFF00) >> 8);
 		if (0x47 == *data) {
 			if (pid != 0x1FFF) {
 				if (sock->pidTable[pid].lastcc >= 0) {
 					uint32_t adaptationF = (tsheader & 0x30);
 					sock->pidTable[pid].rxCount++;
-					if ((adaptationF != 0x20) &&  (adaptationF != 0x0)){
-						sock->pidTable[pid].lastcc = ((sock->pidTable[pid].lastcc + 1) 	& 0xF);
-						if ((0== (sock->pidTable[pid].lastcc & 0xF)) && (0 != (tsheader & 0xF))) {
-							sock->pidTable[pid].rxDrop += 1; // fixme
+					if ((adaptationF != 0x20) && (adaptationF != 0x0)) {
+						sock->pidTable[pid].lastcc = ((sock->pidTable[pid].lastcc  + 1) & 0xF);
+						if ((0 == (sock->pidTable[pid].lastcc & 0xF)) && (0 != (tsheader & 0xF))) {
+							sock->pidTable[pid].rxDrop += 1;
+							sock->rxDrop++;
 							sock->pidTable[pid].lastcc = (tsheader & 0xF);
 						}
 					}
 				} else { // first time
-					newPidInPacket=1;
 					sock->pidTable[pid].lastcc = (tsheader & 0xF);
 					for (int p = 0; p < MAX_PIDS_TS; p++) {
 						if (sock->rPids[p] == 0x1FFF) {
 							sock->rPids[p] = pid;
-							printf("<%s:%u>:(pes-%d): Adding new pid to DB, in index %d, pid 0x%x\n",sock->ipAddress,sock->sin_port,pes,p,pid);
+							printf("\n<%s:%u>:(pes-%d): Adding new pid to DB, in index %d, pid 0x%x\n",
+								sock->ipAddress,
+								sock->sin_port,
+								pes, p, pid);
 							break;
 						}
 					}
 				}
 			}
 		} else {
-			uint8_t* temp = data - 42;
-			printf("parsing failed\n");
-			for (int k = 0; k < 20; k++) {
-				printf("[%d] 0x%x | ", k, temp[k]);
+			if (pes != 0) {
+				printf("error TS packet pes = %d\n", pes);
 			}
-			printf("\n");
-			//return;
-			exit(34);
-//				printf("failed to find %.2x %.2x %.2x\n", data[0], data[1] , data[2]);
+			uint8_t* temp = data - 42;
+			reportErrorPacket(temp, sock);
 		}
 	}
-	if (newPidInPacket)
-		printf(".\n");
 }
 
+void reportErrorPacket(uint8_t* packet, struct RXSock* sock)
+{
+	unsigned long laddress = (unsigned long) packet;
+	printf("packet %u at address 0x%lx found to be bad\n",
+		g_totalPacketsProcessed, laddress);
+	printf("Packet dump 4KB \n");
+	unsigned int* datal = (unsigned int*) packet;
+	for (int k = 0; k < 4; k++) {
+		for (int j = 0; j < 32; j++) {
+			for (int i = 0; i < 8; i++) {
+				printf("0x%x ", datal[i]);
+			}
+			printf("\n");
+			datal += 8;
+		}
+		printf("\n\n\n");
+	}
+	exit(32);
+}
 
 static void printdummyInfo(RXSock* sock)
 {
 
 }
 
-static inline void printST2022Info(struct RXSock* sock)
+static inline void printRtpInfo(struct RXSock* sock)
 {
-	printf("<%s:%u>: received %d packets, %u drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
+	printf("<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 }
 static inline void printMpegTsInfo(RXSock* sock)
 {
-	printf("<%s:%u>: <PID>: <recieved> <CC ERRORS>\n", sock->ipAddress,sock->sin_port);
-	for (int p = 0; p < MAX_PIDS_TS; p++) {
-				int pid = sock->rPids[p];
-				if (pid != 0x1FFF) {
-					printf("\t0x%x:,%lu %d\n", (int)pid,sock->pidTable[pid].rxCount, sock->pidTable[pid].rxDrop);
-					sock->pidTable[pid].rxDrop = 0;
-					sock->pidTable[pid].rxCount = 0;
-				}
+	if (sock->rxDrop > 0) {
+		printf("<%s:%u>: <PID>: <recieved> <CC ERRORS>\n",
+			sock->ipAddress, sock->sin_port);
+		for (int p = 0; p < MAX_PIDS_TS; p++) {
+			int pid = sock->rPids[p];
+			if (pid != 0x1FFF) {
+				printf("\t0x%x:,%lu %d\n", (int) pid,
+					sock->pidTable[pid].rxCount,
+					sock->pidTable[pid].rxDrop);
+				sock->pidTable[pid].rxDrop = 0;
+				sock->pidTable[pid].rxCount = 0;
 			}
-		printf("\n");
-
+		}
+		sock->rxDrop = 0;
+	}
 }
-
 
 void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 {
 	data += 42;
 	for (size_t k = 0; k < packets; k++) {
-    printf("packet %lu\n",k);
-		checkMpegTsPacket(data,  sock);
+		checkMpegTsPacket(data, sock);
 		data += 2048;
-		}
+	}
 	unsigned long long currentTime = time_get_usec();
 	if (currentTime > sock->statTime) {
-		printMpegTsInfo(sock);
 		printf("check cc errors\n");
+		printMpegTsInfo(sock);
 		sock->statTime = currentTime + PRINT_PERIOD;
 	}
 }
@@ -851,11 +848,9 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 
 static inline void printGvspInfo(RXSock* sock)
 {
-	printf("GVSP<%s:%u>: received %d packets, %u drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
+	printf("GVSP<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount,(int) sock->rxDrop);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
-
-
 }
 
 
@@ -863,7 +858,6 @@ void checkGVSPV2packets(uint8_t* data, size_t packets, RXSock* sock)
 {
 	data += 42;
 	for (size_t k = 0; k < packets; k++) {
-		printf("packet %lu\n",k);
 		checkGVSPV2packet(data,  sock);
 		data += 8192;
 	}
@@ -874,7 +868,6 @@ void checkGVSPV2packets(uint8_t* data, size_t packets, RXSock* sock)
 		sock->statTime = currentTime + PRINT_PERIOD;
 	}
 }
-
 
 void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 {
@@ -892,7 +885,6 @@ void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 		return;
 	}
 
-	sock->rxCount++;
 	if (lastPacketType == GVSP_PT_PAYLOAD) {
 		//block id should not increment and packet id should be increment in one packet type can be payload or trailer
 		if (block_id != (uint32_t) sock->lastBlockId) {
@@ -900,8 +892,8 @@ void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 					sock->lastBlockId);
 			sock->rxDrop += 1000000;
 		}
-		if ((packet_id != lastPacketId + 1)
-				&& (packet_id != ((lastPacketId + 2) & 0xFFFFFF))) {
+		if ((packet_id != lastPacketId + 1) &&
+		    (packet_id != ((lastPacketId + 2) & 0xFFFFFF))) {
 			sock->rxDrop += (packet_id - lastPacketId);
 		}
 		sock->lastBlockId = (int) block_id;
@@ -913,7 +905,7 @@ void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 		sock->LastSequenceNumber = packet_id;
 		sock->lastPacketType = packet_type;
 		printf("GVSP: init parsing found block %u packet %u type %d\n",
-				block_id, packet_id, packet_type);
+			block_id, packet_id, packet_type);
 	} else if (lastPacketType == GVSP_PT_TRAILER) {
 		// current packet must be leader, block id should be incremented in 1, packet id must be zero
 		if (packet_type != GVSP_PT_LEADER) {
@@ -924,9 +916,9 @@ void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 		sock->LastSequenceNumber = packet_id;
 		sock->lastPacketType = packet_type;
 
-	} else // LEADER
-	{
-		// block id should not incrment , packet id should be increment in one and packet type must be payload
+	} else {
+		// LEADER
+		// block id should not increment , packet id should be increment in one and packet type must be payload
 		if (block_id != (uint32_t) sock->lastBlockId) {
 			printf("GVSP, expect first payload in pblock, but lost block(s) [%u -%u]\n",
 				block_id, sock->lastBlockId);
@@ -938,8 +930,6 @@ void checkGVSPV2packet(uint8_t* data, struct RXSock* sock)
 		sock->lastBlockId = (int) block_id;
 		sock->LastSequenceNumber = packet_id;
 		sock->lastPacketType = packet_type;
-
 	}
-
 }
 
