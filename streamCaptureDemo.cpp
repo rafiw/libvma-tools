@@ -92,6 +92,7 @@ struct RXSock {
 	uint16_t	rPids[MAX_PIDS_TS];
 	pesinfo		*pidTable;
 	char		ipAddress[INET_ADDRSTRLEN];
+	int bad_packets;
 	validatePacket	fvalidatePacket;
 	validatePackets	fvalidatePackets;
 	printInfo	fprintinfo;
@@ -200,7 +201,7 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device, st
 		}
 		vma_ring_type_attr ring;
 		ring.ring_type = VMA_RING_CYCLIC_BUFFER;
-		ring.ring_cyclicb.num = (1<<8);
+		ring.ring_cyclicb.num = (1<<17);
 		ring.ring_cyclicb.stride_bytes = 1400;
 		ring.ring_cyclicb.comp_mask = 3;
 		int p;
@@ -563,7 +564,7 @@ int main(int argc, char *argv[])
 		fds[i].fvalidatePacket = checkpacket;
 		fds[i].fvalidatePackets = checkpackets;
 		fds[i].fprintinfo = printdummyInfo;
-
+		fds[i].bad_packets = 0;
 		fds[i].sin_port = ntohs(ip_vect[i].sin_port);
 		inet_ntop(AF_INET, &(ip_vect[i].sin_addr), fds[i].ipAddress, INET_ADDRSTRLEN);
 		for (int j = 0; j < MAX_PIDS_TS ; j++) {
@@ -642,7 +643,8 @@ static inline void checkRtpPacket(uint8_t* data, struct RXSock* sock)
 			sock->rxDrop += LostCount;
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
-		reportErrorPacket(data, sock);
+		sock->bad_packets++;
+		//reportErrorPacket(data, sock);
 	}
 
 }
@@ -770,8 +772,9 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 			if (pes != 0) {
 				printf("error TS packet pes = %d\n", pes);
 			}
-			uint8_t* temp = data - 42;
-			reportErrorPacket(temp, sock);
+			sock->bad_packets++;
+			//uint8_t* temp = data - 42;
+			//reportErrorPacket(temp, sock);
 		}
 	}
 }
@@ -803,9 +806,14 @@ static void printdummyInfo(RXSock* sock)
 
 static inline void printRtpInfo(struct RXSock* sock)
 {
-	printf("<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount/PRINT_PERIOD_SEC,(int) sock->rxDrop);
+	printf("<%s:%u>: received %d packets, %d drops bad %d\n",
+			sock->ipAddress,
+			sock->sin_port,
+			(int)sock->rxCount/PRINT_PERIOD_SEC,
+			(int)sock->rxDrop, sock->bad_packets);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
+	sock->bad_packets = 0;
 }
 static inline void printMpegTsInfo(RXSock* sock)
 {
@@ -849,9 +857,14 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
 
 static inline void printGvspInfo(RXSock* sock)
 {
-	printf("GVSP<%s:%u>: received %d packets, %d drops\n", sock->ipAddress,sock->sin_port,(int) sock->rxCount/PRINT_PERIOD_SEC,(int) sock->rxDrop);
+	printf("GVSP<%s:%u>: received %d packets, %d drops bad %d\n",
+			sock->ipAddress,sock->sin_port,
+			(int)sock->rxCount/PRINT_PERIOD_SEC,
+			(int)sock->rxDrop,
+			sock->bad_packets);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
+	sock->bad_packets = 0;
 }
 
 
