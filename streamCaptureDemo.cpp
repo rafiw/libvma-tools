@@ -116,7 +116,7 @@ static void checkMpegTsPackets(uint8_t* data,size_t packets,struct RXSock* sock)
 static void checkGVSPV2packets(uint8_t* data, size_t packets, struct RXSock* sock);
 static void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock);
 static void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock);
-static void reportErrorPacket(uint8_t* packet,struct RXSock* sock);
+
 static void printdummyInfo(RXSock* sock);
 static void printMpegTsInfo(RXSock* sock);
 static inline void printRtpInfo(struct RXSock* sock);
@@ -363,11 +363,12 @@ void *run_stride(void *arg)
 					printf("vma_cyclic_buffer_read returned -1");
 					exit(-1);
 				}
+			
 				if (completion.packets == 0) {
 					continue;
 				}
 				data = ((uint8_t *) completion.payload_ptr);
-				//printf("run_stride: parsing %d packets\n",(int)completion.packets);
+	                        printf("run_stride: parsing %d packets\n",(int)completion.packets);
 				t->sock[i]->fvalidatePackets(data, completion.packets, t->sock[i]);
 			}
 		}
@@ -629,26 +630,27 @@ int main(int argc, char *argv[])
 	exit(0);
 }
 
-
-
-static inline void checkRtpPacket(uint8_t* data, struct RXSock* sock)
+// multy packet functions, get the entire packet
+void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock)
 {
-	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
-	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
-		sock->rxCount++;
-		uint32_t SequenceNumber = htons(*(uint16_t *) (((uint8_t*) data) + 2));
-		uint32_t LostCount = (SequenceNumber + 0x10000
-				- sock->LastSequenceNumber - 1) & 0xFFFF;
-		if (sock->LastSequenceNumber >= 0)
-			sock->rxDrop += LostCount;
-		sock->LastSequenceNumber = SequenceNumber;
-	} else {
-		sock->bad_packets++;
-		//reportErrorPacket(data, sock);
-	}
-
+	checkpacket(data +42, sock);
+    data += 2048-42;
+	return sock->fvalidatePackets(data, packets, sock);
 }
-
+void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
+{
+	data += 42;
+	for (size_t k = 0; k < packets; k++) {
+		checkMpegTsPacket(data, sock);
+		data += 2048;
+	}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > sock->statTime) {
+		//printf("check cc errors\n");
+		printMpegTsInfo(sock);
+		sock->statTime = currentTime + PRINT_PERIOD;
+	}
+}
 
 
 void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock)
@@ -665,6 +667,9 @@ void checkRtpPackets(uint8_t* data, size_t packets, struct RXSock* sock)
 		sock->statTime = currentTime + PRINT_PERIOD;
 	}
 }
+
+
+
 
 void checkpacket(uint8_t* data, struct RXSock* sock)
 {
@@ -724,19 +729,30 @@ void checkpacket(uint8_t* data, struct RXSock* sock)
 		printf("failed to parse packet, retry\n");
 	}
 }
-
-void checkpackets(uint8_t* data, size_t packets, struct RXSock* sock)
+static inline void checkRtpPacket(uint8_t* data, struct RXSock* sock)
 {
-	checkpacket(data +42, sock);
-	return sock->fvalidatePackets(data, packets, sock);
+	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
+	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
+		sock->rxCount++;
+		uint32_t SequenceNumber = htons(*(uint16_t *) (((uint8_t*) data) + 2));
+		uint32_t LostCount = (SequenceNumber + 0x10000
+				- sock->LastSequenceNumber - 1) & 0xFFFF;
+		if (sock->LastSequenceNumber >= 0)
+			sock->rxDrop += LostCount;
+		sock->LastSequenceNumber = SequenceNumber;
+	} else {
+		sock->bad_packets++;
+	}
+
 }
 
+// packet base chekers, get the packet data pointer, after the IP/UDP
 static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 {
 	uint16_t pid;
 	// skip mac IP and UDP hdr
-	printf("%s data = 0x%lx\n", __func__, (unsigned long) data);
-	g_totalPacketsProcessed++;
+    //	printf("%s data = 0x%lx\n", __func__, (unsigned long) data);
+	//g_totalPacketsProcessed++;
 	sock->rxCount++;
 	for (int pes = 0; pes < 7; pes++, data += 188) {
 		uint32_t tsheader = htonl(*((uint32_t *) data));
@@ -769,9 +785,9 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 				}
 			}
 		} else {
-			if (pes != 0) {
-				printf("error TS packet pes = %d\n", pes);
-			}
+			//if (pes != 0) {
+				//printf("error TS packet pes = %d\n", pes);
+			
 			sock->bad_packets++;
 			//uint8_t* temp = data - 42;
 			//reportErrorPacket(temp, sock);
@@ -779,25 +795,6 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 	}
 }
 
-void reportErrorPacket(uint8_t* packet, struct RXSock* sock)
-{
-	unsigned long laddress = (unsigned long) packet;
-	printf("packet %u at address 0x%lx found to be bad\n",
-		g_totalPacketsProcessed, laddress);
-	printf("Packet dump 4KB \n");
-	unsigned int* datal = (unsigned int*) packet;
-	for (int k = 0; k < 4; k++) {
-		for (int j = 0; j < 32; j++) {
-			for (int i = 0; i < 8; i++) {
-				printf("0x%x ", datal[i]);
-			}
-			printf("\n");
-			datal += 8;
-		}
-		printf("\n\n\n");
-	}
-	exit(32);
-}
 
 static void printdummyInfo(RXSock* sock)
 {
@@ -822,8 +819,8 @@ static inline void printMpegTsInfo(RXSock* sock)
 			sock->ipAddress, sock->sin_port);
 		for (int p = 0; p < MAX_PIDS_TS; p++) {
 			int pid = sock->rPids[p];
-			if (pid != 0x1FFF) {
-				printf("\t0x%x:,%lu %d\n", (int) pid,
+		    if ((pid != 0x1FFF) && (sock->pidTable[pid].rxDrop != 0)) {
+				printf("\t0x%x:%lu %d\n", (int) pid,
 					sock->pidTable[pid].rxCount/PRINT_PERIOD_SEC,
 					sock->pidTable[pid].rxDrop);
 				sock->pidTable[pid].rxDrop = 0;
@@ -832,22 +829,13 @@ static inline void printMpegTsInfo(RXSock* sock)
 		}
 		sock->rxDrop = 0;
 	}
+    else{
+	printf("<%s:%u>: Recieived %lu packets, No cc Errors\n",
+	       sock->ipAddress,sock->sin_port,sock->rxCount);
+	sock->rxCount=0;
+    }
 }
 
-void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
-{
-	data += 42;
-	for (size_t k = 0; k < packets; k++) {
-		checkMpegTsPacket(data, sock);
-		data += 2048;
-	}
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
-		printf("check cc errors\n");
-		printMpegTsInfo(sock);
-		sock->statTime = currentTime + PRINT_PERIOD;
-	}
-}
 
 
 #define GVSP_PT_INIT -1
