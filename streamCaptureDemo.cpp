@@ -139,7 +139,7 @@ int scenario;
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
-static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device, struct ip_mreqn *mc)
+static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device, struct ip_mreqn *mc, int prof)
 {
 	int i_ret;
 	struct timeval timeout = { 0, 1 };
@@ -192,34 +192,19 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device, st
 		}
 	}
 	// strideRQ
-#if 0
-	if (scenario == 2) {
-		struct vma_api_t *vma_api = vma_get_api();
-		if (vma_api == NULL) {
-			printf("VMA Extra API not found - working with default socket APIs");
-			exit(1);
-		}
-		vma_ring_type_attr ring;
-		ring.ring_type = VMA_RING_CYCLIC_BUFFER;
-		ring.ring_cyclicb.num = (1<<17);
-		ring.ring_cyclicb.stride_bytes = 1400;
-		ring.ring_cyclicb.comp_mask = 3;
-		int p;
-		int res = vma_api->vma_add_ring_profile(&ring, &p);
-		if (res) {
-			printf("failed adding ring profile");
-			exit(-1);
-		}
+	if (prof) {
 		vma_ring_alloc_logic_attr profile;
-		profile.comp_mask = 13;
+		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
+							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
+							VMA_RING_ALLLOC_MASK_RING_INGRESS;
 		profile.engress = 0;
 		profile.ingress = 1;
-		profile.ring_profile_key = p;
+		profile.ring_profile_key = prof;
 		profile.ring_alloc_logic = RING_LOGIC_PER_SOCKET;
 		vma_setsockopt(RxSocket, SOL_SOCKET, SO_VMA_RING_ALLOC_LOGIC,
 				&profile, sizeof(profile));
 	}
-#endif
+
 	// bind to socket
 	i_ret = vma_bind(RxSocket, (struct sockaddr *)addr, sizeof(struct sockaddr));
 	if (i_ret < 0) {
@@ -358,7 +343,7 @@ void *run_stride(void *arg)
 				int res = vma_api->vma_cyclic_buffer_read(
 						t->sock[i]->ring_fd,
 						&completion, t->min_s, t->max_s,
-						&flags);
+						flags);
 				if (res == -1) {
 					printf("vma_cyclic_buffer_read returned -1");
 					exit(-1);
@@ -547,9 +532,30 @@ int main(int argc, char *argv[])
 		*(void **) &vma_ioctl = dlsym(0, "ioctl");
 		*(void **) &vma_close = dlsym(0, "close");
 	}
+	int prof = 0;
+	if (scenario == 2) {
+		// hack to start VMA
+		int dummy = vma_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		vma_close(dummy);
+		struct vma_api_t *vma_api = vma_get_api();
+		if (vma_api == NULL) {
+			printf("VMA Extra API not found - working with default socket APIs");
+			exit(1);
+		}
+		vma_ring_type_attr ring;
+		ring.ring_type = VMA_RING_CYCLIC_BUFFER;
+		ring.ring_cyclicb.num = (1<<17);
+		ring.ring_cyclicb.stride_bytes = 1400;
+		ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
+		int res = vma_api->vma_add_ring_profile(&ring, &prof);
+		if (res) {
+			printf("failed adding ring profile");
+			exit(-1);
+		}
+	}
 	for (int i = 0; i < sock_num; i++) {
 		struct ip_mreqn mc;
-		fds[i].fd = OpenRxSocket(&ip_vect[i], 0, argv[1], &mc);
+		fds[i].fd = OpenRxSocket(&ip_vect[i], 0, argv[1], &mc, prof);
 		if (fds[i].fd <= 0) {
 			printf("Error - rx open failed. %d\n", i);
 			exit(-1);
