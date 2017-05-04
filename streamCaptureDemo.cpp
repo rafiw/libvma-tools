@@ -51,6 +51,7 @@
 #define PRINT_PERIOD_SEC		5
 #define PRINT_PERIOD 			1000000 * PRINT_PERIOD_SEC
 #define MAX_RINGS 1000
+#define STRIDE_SIZE				2048
 
 int (*vma_recvmmsg)(int, void *, int, int, void *);
 int (*vma_recv)(int, void *, int, int);
@@ -72,11 +73,15 @@ struct pesinfo {
 };
 
 class RXSock;
+class CommonCyclicRing;
 
-typedef void (*validatePackets)(uint8_t*, size_t, RXSock*);
+
+typedef void (*validatePackets)(uint8_t*, size_t, CommonCyclicRing*);
 typedef void (*validatePacket)(uint8_t*, RXSock*);
 typedef void (*printInfo)(RXSock*);
+typedef void* (*Process_func)(void*);
 
+Process_func fp_process =NULL;
 
 class RXSock {
 public:
@@ -97,7 +102,6 @@ public:
 	char		ipAddress[INET_ADDRSTRLEN];
 	int bad_packets;
 	validatePacket	fvalidatePacket;
-	validatePackets	fvalidatePackets;
 	printInfo	fprintinfo;
   RXSock(){ pidTable = new pesinfo[8192]; }
   virtual ~RXSock() { delete[] pidTable; }
@@ -108,19 +112,21 @@ struct flow_param {
   sockaddr_in addr;
 };
 
+
 class CommonCyclicRing {
   public:
     int numOfSockets;
     int ring_id;
+	int ring_fd;
     RXSock* hashedSock[256];
     std::vector<sockaddr_in*> addr_vect;
     std::vector<RXSock*> sock_vect;
-    CommonCyclicRing():numOfSockets(0){
+	validatePackets	fvalidatePackets;
+    CommonCyclicRing():numOfSockets(0),ring_fd(0){
     for (int i=0; i < 256; i++ ) {
       hashedSock[i] = NULL;
     }
   }
-
 };
 
 class RXThread {
@@ -129,7 +135,7 @@ public:
 	pthread_t	t;
   std::vector<CommonCyclicRing*> rings;
   int numOfRings;
-	RXSock	*sock[MAX_SOCKETS_THREAD];
+//	RXSock	*sock[MAX_SOCKETS_THREAD];
 	int		sock_len;
 	size_t		min_s;
 	size_t		max_s;
@@ -138,6 +144,7 @@ public:
 
 static int hashIpPort(sockaddr_in addr );
 static unsigned char hashIpPort2(sockaddr_in addr );
+static inline unsigned char getHashValFromPacket(uint8_t* data);
 
 
 static void checkpacket(uint8_t* data, RXSock* sock);
@@ -145,10 +152,12 @@ static void checkMpegTsPacket(uint8_t* data, RXSock* sock);
 static void checkRtpPacket(uint8_t* data, RXSock* sock);
 static void checkGVSPV2packet(uint8_t* data, RXSock* sock);
 
-static void checkMpegTsPackets(uint8_t* data,size_t packets,RXSock* sock);
-static void checkGVSPV2packets(uint8_t* data, size_t packets, RXSock* sock);
-static void checkRtpPackets(uint8_t* data, size_t packets, RXSock* sock);
-static void checkpackets(uint8_t* data, size_t packets, RXSock* sock);
+static void checkMpegTsPackets(uint8_t* data,size_t packets,CommonCyclicRing* pRing);
+static void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
+static void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
+static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
+static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
+	
 
 static void printdummyInfo(RXSock* sock);
 static void printMpegTsInfo(RXSock* sock);
@@ -339,24 +348,26 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 void *run_copy(void *arg)
 {
 	struct RXThread *t = (struct RXThread *) arg;
-	uint8_t Dump[2048];
+	uint8_t Dump[STRIDE_SIZE];
 	printf("starting rx\n");
 	while (1) {
-		for (int i = 0; i < t->sock_len; i++) {
-			for (int j = 0; j < 10; j++) {
-				int size = vma_recv(t->sock[i]->fd, Dump, 2048,
-						MSG_NOSIGNAL);
-				if (size > 0)
-					t->sock[i]->fvalidatePacket(Dump, t->sock[i]);
+		for (int r = 0; r < t->numOfRings; r++) {
+			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
+				RXSock* pSock = t->rings[r]->sock_vect[i];
+				for (int j = 0; j < 10; j++) {
+					int size = vma_recv(pSock->fd, Dump, STRIDE_SIZE,MSG_NOSIGNAL);
+					if (size > 0)
+						pSock->fvalidatePacket(Dump, pSock);
+					}
+				uint64_t currentTime = time_get_usec();
+				if (currentTime > pSock->statTime) {
+					pSock->fprintinfo(pSock);
+					pSock->statTime = currentTime + PRINT_PERIOD;
+					}
+				}
 			}
-			uint64_t currentTime = time_get_usec();
-			if (currentTime > t->sock[i]->statTime) {
-				t->sock[i]->fprintinfo(t->sock[i]);
-				t->sock[i]->statTime = currentTime + PRINT_PERIOD;
-			}
-		}
 		usleep(sleep_time);
-	}
+		}
 	return NULL;
 }
 
@@ -370,26 +381,28 @@ void *run_stride(void *arg)
 		printf("VMA Extra API not found - working with default socket APIs");
 		exit(1);
 	}
-	for (int i = 0; i < t->sock_len; i++) {
-		int ring_fd_num = vma_api->get_socket_rings_num(t->sock[i]->fd);
+	
+	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin(); pRing!=t->rings.end(); ++pRing) {
+		int sock_len = (*pRing)->numOfSockets;
+		for (int i = 0; i < sock_len; i++) {
+		int ring_fd_num = vma_api->get_socket_rings_num((*pRing)->sock_vect[i]->fd );
 		int* ring_fds = new int[ring_fd_num];
-		vma_api->get_socket_rings_fds(t->sock[i]->fd, ring_fds,
-				ring_fd_num);
-		t->sock[i]->ring_fd = *ring_fds;
-    
+		vma_api->get_socket_rings_fds((*pRing)->sock_vect[i]->fd, ring_fds,ring_fd_num);
+		(*pRing)->sock_vect[i]->ring_fd = *ring_fds;
+		(*pRing)->ring_fd = *ring_fds;
 		delete[] ring_fds;
-	}
+			}
+		}
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_mp_t completion;
-
 	for (int iter = 0; iter < 1000000; iter++) {
-		for (int i = 0; i < t->sock_len; i++) {
+		for (int i = 0; i < t->numOfRings; i++) {
 			for (int j = 0; j < 10; j++) {
 				completion.packets = 0;
 				flags = MSG_DONTWAIT;
 				int res = vma_api->vma_cyclic_buffer_read(
-						t->sock[i]->ring_fd,
+						t->rings[i]->ring_fd,
 						&completion, t->min_s, t->max_s,
 						flags);
 				if (res == -1) {
@@ -402,30 +415,32 @@ void *run_stride(void *arg)
 				}
 				data = ((uint8_t *) completion.payload_ptr);
 	                       // printf("run_stride: parsing %d packets\n",(int)completion.packets);
-				t->sock[i]->fvalidatePackets(data, completion.packets, t->sock[i]);
+				t->rings[i]->fvalidatePackets(data, completion.packets, t->rings[i]);
 			}
 		}
 		usleep(sleep_time);
 	}
 	//leave MC
-	for (int i = 0; i < t->sock_len; i++) {
-		int rc = vma_setsockopt(t->sock[i]->fd, IPPROTO_IP,
-		IP_DROP_MEMBERSHIP, &t->sock[i]->mc, sizeof(struct ip_mreqn));
+	for (int r = 0; r < t->numOfRings; r++) {
+		for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
+			int rc = vma_setsockopt(t->rings[r]->sock_vect[i]->fd, IPPROTO_IP,
+		IP_DROP_MEMBERSHIP, &t->rings[r]->sock_vect[i]->mc, sizeof(struct ip_mreqn));
 		if (rc < 0) {
 			printf("%s: drop add membership to (0X%08X) on (0X%08X) failed. (%s)\n",__func__,
-				t->sock[i]->mc.imr_multiaddr.s_addr,
-				t->sock[i]->mc.imr_address.s_addr,
+				t->rings[r]->sock_vect[i]->mc.imr_multiaddr.s_addr,
+				t->rings[r]->sock_vect[i]->mc.imr_address.s_addr,
 				strerror(errno));
-			vma_close(t->sock[i]->fd);
+			vma_close(t->rings[r]->sock_vect[i]->fd);
 		}
 	}
+		}
 	return NULL;
 }
 
 void *run_zero(void *arg)
 {
 	struct RXThread *t = (struct RXThread *) arg;
-	uint8_t Dump[2048];
+	uint8_t Dump[STRIDE_SIZE];
 	uint8_t *data;
 	struct vma_api_t *vma_api = vma_get_api();
 	int flags = 0;
@@ -435,32 +450,28 @@ void *run_zero(void *arg)
 	}
 	printf("starting rx\n");
 	while (1) {
-		for (int i = 0; i < t->sock_len; i++) {
-			for (int j = 0; j < 10; j++) {
-				int size = vma_api->recvfrom_zcopy(
-						t->sock[i]->fd, &Dump, 2048,
-						&flags, NULL, NULL);
-				if (MSG_VMA_ZCOPY & flags)
-					data = (uint8_t *) ((struct vma_packets_t*) Dump)->pkts[0].iov[0].iov_base;
-				else
-					data = Dump;
-				if (size > 0 && ((data[0] & 0xC0) == 0x80)
-						&& ((data[1] & 0x7f) == 0x62)) {
-					t->sock[i]->fvalidatePacket(data, t->sock[i]);
-
-
-					if (MSG_VMA_ZCOPY & flags) {
-						vma_api->free_packets(t->sock[i]->fd,
-								((struct vma_packets_t*) Dump)->pkts,
-								((struct vma_packets_t*) Dump)->n_packet_num);
+		for (int r = 0; r < t->numOfRings; r++) {
+			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
+				RXSock* pSock = t->rings[r]->sock_vect[i];
+				for (int j = 0; j < 10; j++) {
+					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, STRIDE_SIZE,&flags, NULL, NULL);
+					if (MSG_VMA_ZCOPY & flags)
+						data = (uint8_t *) ((struct vma_packets_t*) Dump)->pkts[0].iov[0].iov_base;
+					else
+						data = Dump;
+					if (size > 0 && ((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == 0x62)) {
+						pSock->fvalidatePacket(data, pSock);
+						if (MSG_VMA_ZCOPY & flags) {
+							vma_api->free_packets(pSock->fd,((struct vma_packets_t*) Dump)->pkts,((struct vma_packets_t*) Dump)->n_packet_num);
+						}
+						} else {
+							uint64_t currentTime = time_get_usec();
+							if (currentTime	> pSock->statTime)
+								pSock->fprintinfo(pSock);
+							}
 					}
-				} else {
-					uint64_t currentTime = time_get_usec();
-					if (currentTime	> t->sock[i]->statTime)
-					t->sock[i]->fprintinfo(t->sock[i]);
 				}
 			}
-		}
 		usleep(sleep_time);
 	}
 	return NULL;
@@ -497,7 +508,7 @@ void destroyFlows(CommonCyclicRing* rings[])
 {
   for ( int i=0; i < MAX_RINGS; i++ ) {
     if (rings[i] != NULL ) {
-      for (std::vector<sockaddr_in*>::iterator it = rings[i]->addr_vect.begin(); it!=rings[i]->addr_vect.end(); ++it) {
+	  for (std::vector<sockaddr_in*>::iterator it = rings[i]->addr_vect.begin(); it!=rings[i]->addr_vect.end(); ++it) {
         delete *it;
       }
       for (std::vector<RXSock*>::iterator it = rings[i]->sock_vect.begin(); it!=rings[i]->sock_vect.end(); ++it) {
@@ -705,7 +716,6 @@ int main(int argc, char *argv[])
 		  pSock->statTime = time_get_usec() + 1000*i;
 		  pSock->index = i;
 		  pSock->fvalidatePacket = checkpacket;
-		  pSock->fvalidatePackets = checkpackets;
 		  pSock->fprintinfo = printdummyInfo;
 		  pSock->bad_packets = 0;
 		  pSock->sin_port = ntohs((*it)->sin_port);
@@ -728,11 +738,14 @@ int main(int argc, char *argv[])
       }
       pRings[i]->sock_vect.push_back(pSock);
     }
+	if ( pRings[i]->numOfSockets == 1) {
+		pRings[i]->fvalidatePackets = CheckSingleSocketPackets;
+		}
+	else {
+		pRings[i]->fvalidatePackets = CheckMultiSocketsPackets;
+		}
   }
-
-
-
-  // 
+	  
 	// Distribute fds to threads
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
@@ -742,48 +755,41 @@ int main(int argc, char *argv[])
       ringIdx++;
     }
     int thread_id = var % threads_num;
-    printf("Assigning sockets from ring %d to thread %d \n",ringIdx,thread_id);
-    for (std::vector<RXSock*>::iterator it = pRings[ringIdx]->sock_vect.begin(); it!=pRings[ringIdx]->sock_vect.end(); ++it) {
-      rxThreads[thread_id].sock[rxThreads[thread_id].sock_len] = *it;
-			rxThreads[thread_id].sock_len++;
-		  rxThreads[thread_id].max_s = max_s;
-		  rxThreads[thread_id].min_s = min_s;
-    }
+    printf("Assigning ring %d to thread %d \n",ringIdx,thread_id);
+	rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
+	rxThreads[thread_id].numOfRings++;
+	rxThreads[thread_id].max_s = max_s;
+	rxThreads[thread_id].min_s = min_s;
+	ringIdx++;
   }
+  	
 	for (int i = 0; i < threads_num; i++) {
 		switch (scenario) {
 		case 0:
-			if (pthread_create(&rxThreads[i].t, NULL, run_copy, &rxThreads[i])) {
-				fprintf(stderr, "error creating thread\n");
-				destroyFlows(pRings);
-        return 1;
-			}
+			fp_process =run_copy;
 			break;
 		case 1:
-			if (pthread_create(&rxThreads[i].t, NULL, run_zero, &rxThreads[i])) {
-				fprintf(stderr, "error creating thread\n");
-				destroyFlows(pRings);
-        return 1;
-			}
+			fp_process =run_zero;
 			break;
 		case 2:
-			if (pthread_create(&rxThreads[i].t, NULL, run_stride, &rxThreads[i])) {
-				fprintf(stderr, "error creating thread\n");
-				destroyFlows(pRings);
-        return 1;
-			}
+			fp_process =run_stride;
 			break;
 		default:
 			printf("bad scenario valid is 0-2 got %d\n", scenario);
-      destroyFlows(pRings);
+      		destroyFlows(pRings);
 			exit(-1);
-			break;
-		}
+			}
+		if (pthread_create(&rxThreads[i].t, NULL, fp_process, &rxThreads[i])) {
+				fprintf(stderr, "error creating thread\n");
+				destroyFlows(pRings);
+        		return 1;		
+			}
 	}
+	
 	for (int i = 0; i < threads_num; i++) {
 		if (pthread_join(rxThreads[i].t, NULL)) {
 			fprintf(stderr, "Error creating thread\n");
-      destroyFlows(pRings);
+      		destroyFlows(pRings);
 			return 1;
 		}
 	}
@@ -792,45 +798,87 @@ int main(int argc, char *argv[])
 }
 
 // multy packet functions, get the entire packet
-static void checkpackets(uint8_t* data, size_t packets, RXSock* sock)
+static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {
-	checkpacket(data +42, sock);
-    data += 2048-42;
-	return sock->fvalidatePackets(data, packets, sock);
-}
-void checkMpegTsPackets(uint8_t* data, size_t packets, RXSock* sock)
-{
-	data += 42;
+//	printf("%s\n",__func__);
+	RXSock* pSock = pRing->sock_vect[0];
 	for (size_t k = 0; k < packets; k++) {
-		checkMpegTsPacket(data, sock);
-		data += 2048;
+		pRing->sock_vect[0]->fvalidatePacket(data +42, pRing->sock_vect[0]);
+
+		data += STRIDE_SIZE;
 	}
 	unsigned long long currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
+	if (currentTime > pSock->statTime) {
 		//printf("check cc errors\n");
-		printMpegTsInfo(sock);
-		sock->statTime = currentTime + PRINT_PERIOD;
-	}
+		pRing->sock_vect[0]->fprintinfo(pSock);
+		pSock->statTime = currentTime + PRINT_PERIOD;
+	}	
 }
 
-
-void checkRtpPackets(uint8_t* data, size_t packets, RXSock* sock)
+static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {
+	for (size_t k = 0; k < packets; k++) {		
+		unsigned char hash = getHashValFromPacket(data);
+		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
+		data+= STRIDE_SIZE;
+		}
+	unsigned long long currentTime = time_get_usec();
+	for (int i = 0; i < pRing->numOfSockets; i++) {
+		RXSock* pSock = pRing->sock_vect[i];	
+		if (currentTime > pSock->statTime) {
+			pSock->fprintinfo(pSock);
+			pSock->statTime = currentTime + PRINT_PERIOD;
+			}
+		}	
+}
+
+void checkMpegTsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
+{
+	RXSock* pSock = pRing->sock_vect[0];
 	data += 42;
 	for (size_t k = 0; k < packets; k++) {
-		checkRtpPacket(data,sock);
-		// skip to the end of the stride
-		data += 2048;
+		checkMpegTsPacket(data, pSock);
+		data += STRIDE_SIZE;
 	}
-	uint64_t currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
-		printRtpInfo(sock);
-		sock->statTime = currentTime + PRINT_PERIOD;
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > pSock->statTime) {
+		//printf("check cc errors\n");
+		printMpegTsInfo(pSock);
+		pSock->statTime = currentTime + PRINT_PERIOD;
 	}
 }
 
+void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
+{
+	RXSock* pSock = pRing->sock_vect[0];
+	data += 42;
+	for (size_t k = 0; k < packets; k++) {
+		checkRtpPacket(data, pSock);
+		data += STRIDE_SIZE;
+	}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > pSock->statTime) {
+		//printf("check cc errors\n");
+		printRtpInfo(pSock);
+		pSock->statTime = currentTime + PRINT_PERIOD;
+	}
+}
 
-
+void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
+{
+	RXSock* pSock = pRing->sock_vect[0];
+	data += 42;
+	for (size_t k = 0; k < packets; k++) {
+		checkGVSPV2packet(data,  pSock);
+		data += STRIDE_SIZE;
+	}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > pSock->statTime) {
+		printGvspInfo(pSock);
+		printf("check cc errors\n");
+		pSock->statTime = currentTime + PRINT_PERIOD;
+	}
+}
 
 void checkpacket(uint8_t* data, RXSock* sock)
 {
@@ -851,7 +899,7 @@ void checkpacket(uint8_t* data, RXSock* sock)
 		printf("Socket address %s:%u, found MPEG Ts packets, will be parsed as Mpeg Ts\n",
 			sock->ipAddress, sock->sin_port);
 		sock->fvalidatePacket = checkMpegTsPacket;
-		sock->fvalidatePackets = checkMpegTsPackets;
+//		sock->fvalidatePackets = checkMpegTsPackets;
 		sock->fprintinfo = printMpegTsInfo;
 		return;
 	}
@@ -877,13 +925,13 @@ void checkpacket(uint8_t* data, RXSock* sock)
 	}
 	if (isRtp) {
 		sock->fvalidatePacket = checkRtpPacket;
-		sock->fvalidatePackets = checkRtpPackets;
+	//	sock->fvalidatePackets = checkRtpPackets;
 		sock->fprintinfo = printRtpInfo;
 		return;
 	}
 	if ((pdata[0]== 0 ) && ( pdata[1] ==0 )) {
 		sock->fvalidatePacket = checkGVSPV2packet;
-		sock->fvalidatePackets = checkGVSPV2packets;
+	//	sock->fvalidatePackets = checkGVSPV2packets;
 		sock->fprintinfo = printGvspInfo;
 		printf("Socket address %s:%u, will be parsed ad GVSP (default) format\n", sock->ipAddress,sock->sin_port);
 	} else {
@@ -959,7 +1007,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 
 static void printdummyInfo(RXSock* sock)
 {
-
+	printf("%s\n",__func__);
 }
 
 static inline void printRtpInfo(RXSock* sock)
@@ -1017,20 +1065,6 @@ static inline void printGvspInfo(RXSock* sock)
 }
 
 
-void checkGVSPV2packets(uint8_t* data, size_t packets, RXSock* sock)
-{
-	data += 42;
-	for (size_t k = 0; k < packets; k++) {
-		checkGVSPV2packet(data,  sock);
-		data += 8192;
-	}
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > sock->statTime) {
-		printGvspInfo(sock);
-		printf("check cc errors\n");
-		sock->statTime = currentTime + PRINT_PERIOD;
-	}
-}
 
 void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 {
@@ -1109,4 +1143,20 @@ unsigned char hashIpPort2(sockaddr_in addr )
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
   return smallHash;
 }
+#define IP_HEADER_OFFSET 14
+#define IP_HEADER_SIZE   20
+#define IP_DEST_OFFSET   (IP_HEADER_OFFSET+ 16)
+#define UDP_HEADER_OFFSET (IP_HEADER_SIZE + IP_HEADER_OFFSET )
+#define PORT_DEST_OFFSET  (UDP_HEADER_OFFSET + 2)
+
+unsigned char getHashValFromPacket(uint8_t* data)
+{
+	unsigned int* pIP = (unsigned int*)&data[IP_DEST_OFFSET];
+	unsigned short* pPort = (unsigned short*)&data[PORT_DEST_OFFSET];
+	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
+  	unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
+	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
+	return smallHash;	
+}
+
 
