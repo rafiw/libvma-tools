@@ -809,7 +809,8 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 }
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
-{
+{	
+	printf("%s\n",__func__);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned char hash = getHashValFromPacket(data);
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
@@ -819,6 +820,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 	for (int i = 0; i < pRing->numOfSockets; i++) {
 		RXSock* pSock = pRing->sock_vect[i];
 		if (currentTime > pSock->statTime) {
+			printf("num of sockets %d\n",pRing->numOfSockets);
 			pSock->fprintinfo(pSock);
 			pSock->statTime = currentTime + PRINT_PERIOD;
 			}
