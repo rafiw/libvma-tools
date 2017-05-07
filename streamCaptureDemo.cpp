@@ -142,7 +142,6 @@ public:
 };
 
 
-static int hashIpPort(sockaddr_in addr );
 static unsigned char hashIpPort2(sockaddr_in addr );
 static inline unsigned char getHashValFromPacket(uint8_t* data);
 
@@ -436,6 +435,7 @@ void *run_stride(void *arg)
 			}
 		}
 	}
+	return NULL;
 }
 
 void *run_zero(void *arg)
@@ -528,87 +528,81 @@ int main(int argc, char *argv[])
 	printf("streamCaptureDemo                                            \n");
 	printf("-------------------------------------------------------------\n");
 	//struct RXSock fds[1024];
-  CommonCyclicRing* pRings[MAX_RINGS];
-  int uniqueRings;
+	CommonCyclicRing* pRings[MAX_RINGS];
+	int uniqueRings;
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
-  for (int j=0;j<MAX_RINGS; j++) {
-    pRings[j]=NULL;
-  }
+	for (int j = 0; j < MAX_RINGS; j++) {
+		pRings[j] = NULL;
+	}
 	if (argc < 3) {
-		printf("usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
-			"sleep [min packet] [max packet] use_vma\n");
+		printf(
+				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
+						"sleep [min packet] [max packet] use_vma\n");
 		printf("   logs packet drops\n");
 		printf("   \n");
 		exit(-1);
 	}
-  bool ringPerFd=false;
+	bool ringPerFd = false;
 	std::ifstream infile(argv[2]);
-	
-	std::string ip;
-  std::string line;
-	int port;
-  int ring_id;
-  int lineNum=0;
-  int sock_num,socketRead=0;
 
-  if (argc > 3) {
+	std::string ip;
+	std::string line;
+	int port;
+	int ring_id;
+	int lineNum = 0;
+	int sock_num, socketRead = 0;
+
+	if (argc > 3) {
 		sock_num = atoi(argv[3]);
 	}
 
-  while (std::getline(infile,line))
-  { 
-    if ((line[0] == '#' ) || ((line[0] == '/' ) && (line[1] == '/' ))) {
-      continue;
-    }
-    std::istringstream iss(line);
-    struct flow_param flow;
-    if (iss >> ip >> port)
-	  { 
-      socketRead++;
-		  flow.addr.sin_family = AF_INET;
-		  flow.addr.sin_port = htons(port);
-		  flow.addr.sin_addr.s_addr = inet_addr(ip.c_str());
-		  flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr ));
-		  printf("adding port %s port %d,\n",ip.c_str(),port);
-      flow.hash = hashIpPort2(flow.addr);
-      printf("hash1 value is %d\n",flow.hash);
-		  if (flow.addr.sin_addr.s_addr < 0x01000001) {
-			  printf("Error - illegal IP %x\n",flow.addr.sin_addr.s_addr);
-			  exit(-1);
-		  }
-    }
-    else {
-      continue;
-     //printf("couldnt parse ip and port from socket list file\n\t \n");
-     // std::cout << iss;
-     // exit(-1);
-      }
-    if (iss >> ring_id) {
-    }
-    else {
-      printf("no common rings\n");
-      ring_id =lineNum;
-      lineNum++;
-      ringPerFd=true;
-    }
-    flow.ring_id = ring_id;
-    // add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
-    AddFlow(flow,pRings,uniqueRings);
-    if ( socketRead == sock_num) {
-      printf("read %d sockets from the file\n",socketRead );
-      break;
-    }
-  }
-  if (socketRead < sock_num ) {
-    printf("found only %d socket described in the file\n",socketRead);
-  }
- // if (( ringPerFd == false ) && (uniqueRings != socketRead ))
-  //{
-  //  printf("either allocate rings to all sockets, or to None\n");
-  //  exit(-1);
-  //}
-  //TODO we can have this per ring, no need to limit this
-  ringPerFd = (uniqueRings == sock_num);
+	while (std::getline(infile, line)) {
+		if ((line[0] == '#') || ((line[0] == '/') && (line[1] == '/'))) {
+			continue;
+		}
+		std::istringstream iss(line);
+		struct flow_param flow;
+		if (iss >> ip >> port) {
+			socketRead++;
+			flow.addr.sin_family = AF_INET;
+			flow.addr.sin_port = htons(port);
+			flow.addr.sin_addr.s_addr = inet_addr(ip.c_str());
+			flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr));
+			printf("adding port %s port %d,\n", ip.c_str(), port);
+			flow.hash = hashIpPort2(flow.addr);
+			printf("hash1 value is %d\n", flow.hash);
+			if (flow.addr.sin_addr.s_addr < 0x01000001) {
+				printf("Error - illegal IP %x\n", flow.addr.sin_addr.s_addr);
+				exit(-1);
+			}
+		} else {
+			continue;
+		}
+		if (iss >> ring_id) {
+		} else {
+			printf("no common rings\n");
+			ring_id = lineNum;
+			lineNum++;
+			ringPerFd = true;
+		}
+		flow.ring_id = ring_id;
+		// add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
+		AddFlow(flow, pRings, uniqueRings);
+		if (socketRead == sock_num) {
+			printf("read %d sockets from the file\n", socketRead);
+			break;
+		}
+	}
+	if (socketRead < sock_num) {
+		printf("found only %d socket described in the file\n", socketRead);
+	}
+	// if (( ringPerFd == false ) && (uniqueRings != socketRead ))
+	//{
+	//  printf("either allocate rings to all sockets, or to None\n");
+	//  exit(-1);
+	//}
+	//TODO we can have this per ring, no need to limit this
+	ringPerFd = (uniqueRings == sock_num);
 	if (argc > 4) {
 		threads_num = atoi(argv[4]);
 	}
@@ -747,7 +741,9 @@ int main(int argc, char *argv[])
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
 	}
-	for (int var = 0, ringIdx = 0; var < uniqueRings,ringIdx<MAX_RINGS; ++var,ringIdx++) {
+	for (int var = 0, ringIdx = 1; var < uniqueRings; ++var, ringIdx++) {
+		if (ringIdx >= MAX_RINGS)
+			break;
 		if (pRings[ringIdx] == NULL) {
 			continue;
 		}
@@ -759,7 +755,7 @@ int main(int argc, char *argv[])
 		rxThreads[thread_id].min_s = min_s;
 		ringIdx++;
 	}
-  	
+
 	for (int i = 0; i < threads_num; i++) {
 		switch (scenario) {
 		case 0:
@@ -821,7 +817,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 		}
 	unsigned long long currentTime = time_get_usec();
 	for (int i = 0; i < pRing->numOfSockets; i++) {
-		RXSock* pSock = pRing->sock_vect[i];	
+		RXSock* pSock = pRing->sock_vect[i];
 		if (currentTime > pSock->statTime) {
 			pSock->fprintinfo(pSock);
 			pSock->statTime = currentTime + PRINT_PERIOD;
@@ -1123,12 +1119,6 @@ void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 	}
 }
 
-
-int hashIpPort(sockaddr_in addr )
-{
-  int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
-  return hash;
-}
 
 unsigned char hashIpPort2(sockaddr_in addr )
 {
