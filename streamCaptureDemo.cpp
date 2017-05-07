@@ -186,10 +186,10 @@ static int CreateRingProfile(bool CommonFdPerRing, int RingProfile, int user_id,
   profile.ingress = 1;
   profile.ring_profile_key = RingProfile;
   if (CommonFdPerRing ) {	
-		profile.user_idx =user_id;		
+		profile.user_id =user_id;
 		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
 							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
-							VMA_RING_ALLLOC_MASK_RING_USER_IDX	  |
+							VMA_RING_ALLLOC_MASK_RING_USER_ID	  |
 							VMA_RING_ALLLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
@@ -240,8 +240,10 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 		return 0;
 	}
 	fcntl(RxSocket, F_SETFL, O_NONBLOCK);
-	// Set max socket recieve buffer
-	/*i_ret = vma_setsockopt(RxSocket, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size,
+	/* Set max socket recieve buffer
+#define    IP_RCV_BUFFER_MAX_SIZE   (8096*4096)
+	uint32_t rcvbuf_size = IP_RCV_BUFFER_MAX_SIZE;
+	i_ret = vma_setsockopt(RxSocket, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size,
 	 sizeof(rcvbuf_size));
 	 if (i_ret < 0) {
 	 printf("%s: Failed to set SO_RCVBUF (%s)\n",__func__, strerror(errno));
@@ -249,7 +251,8 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 	 RxSocket = 0;
 	 return 0;
 	 }*/
-	CreateRingProfile(CommonFdPerRing, RingProfile, ring_id, RxSocket );
+	if (scenario == 2)
+		CreateRingProfile(CommonFdPerRing, RingProfile, ring_id, RxSocket );
 	 // bind to specific device
 	struct ifreq interface;
 	strncpy(interface.ifr_ifrn.ifrn_name, device, IFNAMSIZ);
@@ -354,16 +357,12 @@ void *run_copy(void *arg)
 		for (int r = 0; r < t->numOfRings; r++) {
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
-				for (int j = 0; j < 10; j++) {
-					int size = vma_recv(pSock->fd, Dump, STRIDE_SIZE,MSG_NOSIGNAL);
+				for (int j = 0; j < 100; j++) {
+					int size = vma_recv(pSock->fd, Dump, STRIDE_SIZE, MSG_NOSIGNAL);
 					if (size > 0)
 						pSock->fvalidatePacket(Dump, pSock);
 					}
-				uint64_t currentTime = time_get_usec();
-				if (currentTime > pSock->statTime) {
-					pSock->fprintinfo(pSock);
-					pSock->statTime = currentTime + PRINT_PERIOD;
-					}
+				pSock->fprintinfo(pSock);
 				}
 			}
 		usleep(sleep_time);
@@ -381,18 +380,19 @@ void *run_stride(void *arg)
 		printf("VMA Extra API not found - working with default socket APIs");
 		exit(1);
 	}
-	
-	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin(); pRing!=t->rings.end(); ++pRing) {
+
+	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin();
+			pRing != t->rings.end(); ++pRing) {
 		int sock_len = (*pRing)->numOfSockets;
 		for (int i = 0; i < sock_len; i++) {
-		int ring_fd_num = vma_api->get_socket_rings_num((*pRing)->sock_vect[i]->fd );
-		int* ring_fds = new int[ring_fd_num];
-		vma_api->get_socket_rings_fds((*pRing)->sock_vect[i]->fd, ring_fds,ring_fd_num);
-		(*pRing)->sock_vect[i]->ring_fd = *ring_fds;
-		(*pRing)->ring_fd = *ring_fds;
-		delete[] ring_fds;
-			}
+			int ring_fd_num = vma_api->get_socket_rings_num((*pRing)->sock_vect[i]->fd);
+			int* ring_fds = new int[ring_fd_num];
+			vma_api->get_socket_rings_fds((*pRing)->sock_vect[i]->fd, ring_fds, ring_fd_num);
+			(*pRing)->sock_vect[i]->ring_fd = *ring_fds;
+			(*pRing)->ring_fd = *ring_fds;
+			delete[] ring_fds;
 		}
+	}
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_mp_t completion;
@@ -401,21 +401,20 @@ void *run_stride(void *arg)
 			for (int j = 0; j < 10; j++) {
 				completion.packets = 0;
 				flags = MSG_DONTWAIT;
-				int res = vma_api->vma_cyclic_buffer_read(
-						t->rings[i]->ring_fd,
-						&completion, t->min_s, t->max_s,
-						flags);
+				int res = vma_api->vma_cyclic_buffer_read(t->rings[i]->ring_fd,
+						&completion, t->min_s, t->max_s, flags);
 				if (res == -1) {
 					printf("vma_cyclic_buffer_read returned -1");
 					exit(-1);
 				}
-			
+
 				if (completion.packets == 0) {
 					continue;
 				}
 				data = ((uint8_t *) completion.payload_ptr);
-	                       // printf("run_stride: parsing %d packets\n",(int)completion.packets);
-				t->rings[i]->fvalidatePackets(data, completion.packets, t->rings[i]);
+				// printf("run_stride: parsing %d packets\n",(int)completion.packets);
+				t->rings[i]->fvalidatePackets(data, completion.packets,
+						t->rings[i]);
 			}
 		}
 		usleep(sleep_time);
@@ -424,17 +423,19 @@ void *run_stride(void *arg)
 	for (int r = 0; r < t->numOfRings; r++) {
 		for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 			int rc = vma_setsockopt(t->rings[r]->sock_vect[i]->fd, IPPROTO_IP,
-		IP_DROP_MEMBERSHIP, &t->rings[r]->sock_vect[i]->mc, sizeof(struct ip_mreqn));
-		if (rc < 0) {
-			printf("%s: drop add membership to (0X%08X) on (0X%08X) failed. (%s)\n",__func__,
-				t->rings[r]->sock_vect[i]->mc.imr_multiaddr.s_addr,
-				t->rings[r]->sock_vect[i]->mc.imr_address.s_addr,
-				strerror(errno));
-			vma_close(t->rings[r]->sock_vect[i]->fd);
+			IP_DROP_MEMBERSHIP, &t->rings[r]->sock_vect[i]->mc,
+					sizeof(struct ip_mreqn));
+			if (rc < 0) {
+				printf(
+						"%s: drop add membership to (0X%08X) on (0X%08X) failed. (%s)\n",
+						__func__,
+						t->rings[r]->sock_vect[i]->mc.imr_multiaddr.s_addr,
+						t->rings[r]->sock_vect[i]->mc.imr_address.s_addr,
+						strerror(errno));
+				vma_close(t->rings[r]->sock_vect[i]->fd);
+			}
 		}
 	}
-		}
-	return NULL;
 }
 
 void *run_zero(void *arg)
@@ -453,25 +454,23 @@ void *run_zero(void *arg)
 		for (int r = 0; r < t->numOfRings; r++) {
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
-				for (int j = 0; j < 10; j++) {
+				for (int j = 0; j < 100; j++) {
 					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, STRIDE_SIZE,&flags, NULL, NULL);
 					if (MSG_VMA_ZCOPY & flags)
 						data = (uint8_t *) ((struct vma_packets_t*) Dump)->pkts[0].iov[0].iov_base;
 					else
 						data = Dump;
-					if (size > 0 && ((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == 0x62)) {
+					if (size > 0) {
 						pSock->fvalidatePacket(data, pSock);
 						if (MSG_VMA_ZCOPY & flags) {
 							vma_api->free_packets(pSock->fd,((struct vma_packets_t*) Dump)->pkts,((struct vma_packets_t*) Dump)->n_packet_num);
 						}
-						} else {
-							uint64_t currentTime = time_get_usec();
-							if (currentTime	> pSock->statTime)
-								pSock->fprintinfo(pSock);
-							}
+					} else {
+						pSock->fprintinfo(pSock);
 					}
 				}
 			}
+		}
 		usleep(sleep_time);
 	}
 	return NULL;
@@ -693,75 +692,73 @@ int main(int argc, char *argv[])
 			exit(-1);
 		}
 	}
-  
-  // for every ring, open sockets
-  for (int i=0; i< MAX_RINGS; i++) {
-    if (pRings[i] == NULL ) {
-      continue;
-    }
-    for (std::vector<sockaddr_in*>::iterator it = pRings[i]->addr_vect.begin(); it!=pRings[i]->addr_vect.end(); ++it ) {
-      struct ip_mreqn mc;
-      printf("Adding socket to ring %d\n",i);
-      RXSock* pSock = new RXSock;
-      pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
-      if (pSock->fd <= 0) {
-		  	printf("Error - rx open failed. %d\n", i);
-			  exit(-1);
-		  }
-      memcpy(&pSock->mc, &mc, sizeof(mc));
-		  pSock->LastSequenceNumber = -1;
-		  pSock->lastBlockId = -1;
-		  pSock->rxCount = 0;
-		  pSock->rxDrop = 0;
-		  pSock->statTime = time_get_usec() + 1000*i;
-		  pSock->index = i;
-		  pSock->fvalidatePacket = checkpacket;
-		  pSock->fprintinfo = printdummyInfo;
-		  pSock->bad_packets = 0;
-		  pSock->sin_port = ntohs((*it)->sin_port);
-      unsigned char hash = hashIpPort2(**it);
-      printf("hash value is %d\n",hash);
-      if ( NULL != pRings[i]->hashedSock[hash] ) {
-        printf ("Collision, reshuffle your ip addresses \n");
-        exit(67);
-      }
-      pRings[i]->hashedSock[hash] = pSock;
-
-		  inet_ntop(AF_INET, &((*it)->sin_addr), pSock->ipAddress, INET_ADDRSTRLEN);
-  		for (int pid = 0; pid < MAX_PIDS_TS ; pid++) {
-			  pSock->rPids[pid] = 0x1FFF;
-			  }
-		  for (int j = 0; j < 8192; j++) {
-			  pSock->pidTable[j].lastcc = -1;
-			  pSock->pidTable[j].rxDrop = 0;
-			  pSock->pidTable[j].rxCount =0;
-      }
-      pRings[i]->sock_vect.push_back(pSock);
-    }
-	if ( pRings[i]->numOfSockets == 1) {
-		pRings[i]->fvalidatePackets = CheckSingleSocketPackets;
+	// for every ring, open sockets
+	for (int i=0; i< MAX_RINGS; i++) {
+		if (pRings[i] == NULL ) {
+			continue;
 		}
-	else {
-		pRings[i]->fvalidatePackets = CheckMultiSocketsPackets;
+		std::vector<sockaddr_in*>::iterator it;
+		for (it = pRings[i]->addr_vect.begin();
+				it!=pRings[i]->addr_vect.end(); ++it) {
+			struct ip_mreqn mc;
+			printf("Adding socket to ring %d\n",i);
+			RXSock* pSock = new RXSock;
+			pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
+			if (pSock->fd <= 0) {
+				printf("Error - rx open failed. %d\n", i);
+				exit(-1);
+			}
+			memcpy(&pSock->mc, &mc, sizeof(mc));
+			pSock->LastSequenceNumber = -1;
+			pSock->lastBlockId = -1;
+			pSock->rxCount = 0;
+			pSock->rxDrop = 0;
+			pSock->statTime = time_get_usec() + 1000*i;
+			pSock->index = i;
+			pSock->fvalidatePacket = checkpacket;
+			pSock->fprintinfo = printdummyInfo;
+			pSock->bad_packets = 0;
+			pSock->sin_port = ntohs((*it)->sin_port);
+			unsigned char hash = hashIpPort2(**it);
+			printf("hash value is %d\n",hash);
+			if ( NULL != pRings[i]->hashedSock[hash] ) {
+				printf ("Collision, reshuffle your ip addresses \n");
+				exit(67);
+			}
+			pRings[i]->hashedSock[hash] = pSock;
+			inet_ntop(AF_INET, &((*it)->sin_addr), pSock->ipAddress, INET_ADDRSTRLEN);
+			for (int pid = 0; pid < MAX_PIDS_TS ; pid++) {
+				pSock->rPids[pid] = 0x1FFF;
+			}
+			for (int j = 0; j < 8192; j++) {
+				pSock->pidTable[j].lastcc = -1;
+				pSock->pidTable[j].rxDrop = 0;
+				pSock->pidTable[j].rxCount =0;
+			}
+			pRings[i]->sock_vect.push_back(pSock);
 		}
-  }
-	  
+		if (pRings[i]->numOfSockets == 1) {
+			pRings[i]->fvalidatePackets = CheckSingleSocketPackets;
+		} else {
+			pRings[i]->fvalidatePackets = CheckMultiSocketsPackets;
+		}
+	}
 	// Distribute fds to threads
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
 	}
-  for (int var =0, ringIdx=0; var < uniqueRings; ++var) {
-    while (pRings[ringIdx] == NULL ) {
-      ringIdx++;
-    }
-    int thread_id = var % threads_num;
-    printf("Assigning ring %d to thread %d \n",ringIdx,thread_id);
-	rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
-	rxThreads[thread_id].numOfRings++;
-	rxThreads[thread_id].max_s = max_s;
-	rxThreads[thread_id].min_s = min_s;
-	ringIdx++;
-  }
+	for (int var = 0, ringIdx = 0; var < uniqueRings,ringIdx<MAX_RINGS; ++var,ringIdx++) {
+		if (pRings[ringIdx] == NULL) {
+			continue;
+		}
+		int thread_id = var % threads_num;
+		printf("Assigning ring %d to thread %d \n", ringIdx, thread_id);
+		rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
+		rxThreads[thread_id].numOfRings++;
+		rxThreads[thread_id].max_s = max_s;
+		rxThreads[thread_id].min_s = min_s;
+		ringIdx++;
+	}
   	
 	for (int i = 0; i < threads_num; i++) {
 		switch (scenario) {
@@ -840,12 +837,7 @@ void checkMpegTsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 		checkMpegTsPacket(data, pSock);
 		data += STRIDE_SIZE;
 	}
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > pSock->statTime) {
-		//printf("check cc errors\n");
-		printMpegTsInfo(pSock);
-		pSock->statTime = currentTime + PRINT_PERIOD;
-	}
+	printMpegTsInfo(pSock);
 }
 
 void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
@@ -856,12 +848,7 @@ void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 		checkRtpPacket(data, pSock);
 		data += STRIDE_SIZE;
 	}
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > pSock->statTime) {
-		//printf("check cc errors\n");
-		printRtpInfo(pSock);
-		pSock->statTime = currentTime + PRINT_PERIOD;
-	}
+	printRtpInfo(pSock);
 }
 
 void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
@@ -872,12 +859,7 @@ void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 		checkGVSPV2packet(data,  pSock);
 		data += STRIDE_SIZE;
 	}
-	unsigned long long currentTime = time_get_usec();
-	if (currentTime > pSock->statTime) {
-		printGvspInfo(pSock);
-		printf("check cc errors\n");
-		pSock->statTime = currentTime + PRINT_PERIOD;
-	}
+	printGvspInfo(pSock);
 }
 
 void checkpacket(uint8_t* data, RXSock* sock)
@@ -1007,22 +989,32 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 
 static void printdummyInfo(RXSock* sock)
 {
-	printf("%s\n",__func__);
+
 }
 
 static inline void printRtpInfo(RXSock* sock)
 {
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime < sock->statTime)
+		return;
+
 	printf("<%s:%u>: received %d packets, %d drops bad %d\n",
 			sock->ipAddress,
 			sock->sin_port,
-			(int)sock->rxCount,
+			(int)sock->rxCount/PRINT_PERIOD_SEC,
 			(int)sock->rxDrop, sock->bad_packets);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 	sock->bad_packets = 0;
+	sock->statTime = currentTime + PRINT_PERIOD;
 }
+
 static inline void printMpegTsInfo(RXSock* sock)
 {
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime < sock->statTime)
+		return;
+	sock->statTime = currentTime + PRINT_PERIOD;
 	if (sock->rxDrop > 0) {
 		printf("<%s:%u>: <PID>: <recieved> <CC ERRORS>\n",
 			sock->ipAddress, sock->sin_port);
@@ -1037,12 +1029,11 @@ static inline void printMpegTsInfo(RXSock* sock)
 			}
 		}
 		sock->rxDrop = 0;
+	} else{
+		printf("<%s:%u>: Recieived %lu packets, No cc Errors\n",
+				sock->ipAddress,sock->sin_port,sock->rxCount);
+		sock->rxCount=0;
 	}
-    else{
-	printf("<%s:%u>: Recieived %lu packets, No cc Errors\n",
-	       sock->ipAddress,sock->sin_port,sock->rxCount);
-	sock->rxCount=0;
-    }
 }
 
 
@@ -1054,6 +1045,10 @@ static inline void printMpegTsInfo(RXSock* sock)
 
 static inline void printGvspInfo(RXSock* sock)
 {
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime < sock->statTime)
+		return;
+	sock->statTime = currentTime + PRINT_PERIOD;
 	printf("GVSP<%s:%u>: received %d packets, %d drops bad %d\n",
 			sock->ipAddress,sock->sin_port,
 			(int)sock->rxCount/PRINT_PERIOD_SEC,
@@ -1063,8 +1058,6 @@ static inline void printGvspInfo(RXSock* sock)
 	sock->rxDrop = 0;
 	sock->bad_packets = 0;
 }
-
-
 
 void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 {
