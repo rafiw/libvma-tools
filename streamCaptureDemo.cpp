@@ -454,7 +454,7 @@ void *run_zero(void *arg)
 		for (int r = 0; r < t->numOfRings; r++) {
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
-				for (int j = 0; j < 100; j++) {
+				for (int j = 0; j < 1000; j++) {
 					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, STRIDE_SIZE,&flags, NULL, NULL);
 					if (MSG_VMA_ZCOPY & flags)
 						data = (uint8_t *) ((struct vma_packets_t*) Dump)->pkts[0].iov[0].iov_base;
