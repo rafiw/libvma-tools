@@ -357,7 +357,7 @@ void *run_copy(void *arg)
 		for (int r = 0; r < t->numOfRings; r++) {
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
-				for (int j = 0; j < 100; j++) {
+				for (int j = 0; j < 1000; j++) {
 					int size = vma_recv(pSock->fd, Dump, STRIDE_SIZE, MSG_NOSIGNAL);
 					if (size > 0)
 						pSock->fvalidatePacket(Dump, pSock);
