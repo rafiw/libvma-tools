@@ -384,6 +384,7 @@ void *run_stride(void *arg)
 	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin();
 			pRing != t->rings.end(); ++pRing) {
 		int sock_len = (*pRing)->numOfSockets;
+    printf("num of Sockets = %d\n",sock_len);
 		for (int i = 0; i < sock_len; i++) {
 			int ring_fd_num = vma_api->get_socket_rings_num((*pRing)->sock_vect[i]->fd);
 			int* ring_fds = new int[ring_fd_num];
@@ -493,7 +494,9 @@ const char* get_sceanrio_str(int scen)
 void AddFlow(flow_param flow,CommonCyclicRing* rings[], int &uniqueRings)
 {
   int ring_id = flow.ring_id;
+  printf ("%s, id = %d\n",__func__,flow.ring_id);
   if ( rings[ring_id] == NULL ) {
+    printf("Adding Ring id %d\n",ring_id);
     rings[ring_id] = new CommonCyclicRing;
     rings[ring_id]->ring_id =ring_id;
     uniqueRings++;
@@ -580,6 +583,7 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		if (iss >> ring_id) {
+      printf ("read ring id %d\n",ring_id);
 		} else {
 			printf("no common rings\n");
 			ring_id = lineNum;
@@ -742,19 +746,22 @@ int main(int argc, char *argv[])
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
 	}
-	for (int var = 0, ringIdx = 1; var < uniqueRings; ++var, ringIdx++) {
+  printf("Distributing %d Unique ring(s) to %d thread(s)\n",uniqueRings, threads_num );
+	for (int var = 0, ringIdx = 1; var < uniqueRings; ringIdx++) {
 		if (ringIdx >= MAX_RINGS)
 			break;
 		if (pRings[ringIdx] == NULL) {
+      printf("ringIdx %d is null\n",ringIdx);
 			continue;
 		}
-		int thread_id = var % threads_num;
+   	int thread_id = var % threads_num;
+    var++;
 		printf("Assigning ring %d to thread %d \n", ringIdx, thread_id);
 		rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
 		rxThreads[thread_id].numOfRings++;
 		rxThreads[thread_id].max_s = max_s;
 		rxThreads[thread_id].min_s = min_s;
-		ringIdx++;
+//		ringIdx++;
 	}
 
 	for (int i = 0; i < threads_num; i++) {
@@ -811,7 +818,7 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {	
-	printf("%s\n",__func__);
+//	printf("%s\n",__func__);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned char hash = getHashValFromPacket(data);
 		//due to error in HW few packets have 00 in CX5!!!
@@ -826,7 +833,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 	for (int i = 0; i < pRing->numOfSockets; i++) {
 		RXSock* pSock = pRing->sock_vect[i];
 		if (currentTime > pSock->statTime) {
-			printf("num of sockets %d\n",pRing->numOfSockets);
+			//printf("num of sockets %d\n",pRing->numOfSockets);
 			pSock->fprintinfo(pSock);
 			pSock->statTime = currentTime + PRINT_PERIOD;
 			}
@@ -993,7 +1000,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 
 static void printdummyInfo(RXSock* sock)
 {
-
+ 	printf("<%s:%u>: didnt not received packets\n",sock->ipAddress,sock->sin_port);
 }
 
 static inline void printRtpInfo(RXSock* sock)
