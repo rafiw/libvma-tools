@@ -65,6 +65,7 @@ int sock_num;
 int threads_num;
 int sleep_time;
 unsigned int g_totalPacketsProcessed =0;
+unsigned int g_totalbad =0;
 
 struct pesinfo {
 	int		lastcc;
@@ -813,9 +814,14 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 	printf("%s\n",__func__);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned char hash = getHashValFromPacket(data);
+		//due to error in HW few packets have 00 in CX5!!!
+		if (!hash){
+			g_totalbad++;
+			continue;
+		}
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
 		data+= STRIDE_SIZE;
-		}
+	}
 	unsigned long long currentTime = time_get_usec();
 	for (int i = 0; i < pRing->numOfSockets; i++) {
 		RXSock* pSock = pRing->sock_vect[i];
@@ -996,15 +1002,17 @@ static inline void printRtpInfo(RXSock* sock)
 	if (currentTime < sock->statTime)
 		return;
 
-	printf("<%s:%u>: received %d packets, %d drops bad %d\n",
+	printf("<%s:%u>: received %d packets, %d drops bad %d global bad %d\n",
 			sock->ipAddress,
 			sock->sin_port,
 			(int)sock->rxCount/PRINT_PERIOD_SEC,
-			(int)sock->rxDrop, sock->bad_packets);
+			(int)sock->rxDrop, sock->bad_packets,
+			g_totalbad);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 	sock->bad_packets = 0;
 	sock->statTime = currentTime + PRINT_PERIOD;
+	g_totalbad = 0;
 }
 
 static inline void printMpegTsInfo(RXSock* sock)
