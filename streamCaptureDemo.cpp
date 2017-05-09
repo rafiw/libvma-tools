@@ -191,16 +191,16 @@ static int CreateRingProfile(bool CommonFdPerRing, int RingProfile, int user_id,
   profile.ring_profile_key = RingProfile;
   if (CommonFdPerRing ) {	
 		profile.user_id =user_id;
-		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_KEY|
-							VMA_RING_ALLLOC_MASK_RING_USER_ID	  |
-							VMA_RING_ALLLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
+							VMA_RING_ALLOC_MASK_RING_USER_ID	  |
+							VMA_RING_ALLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_USER_ID;
   }
   else {
-		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_KEY|
-							VMA_RING_ALLLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
+							VMA_RING_ALLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_SOCKET;
