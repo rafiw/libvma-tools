@@ -2,7 +2,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <sched.h>
-#include <time.h>
+//#include <time.h>
 #include <set>
 #include <stdlib.h>
 #include <netinet/in.h>
@@ -10,8 +10,12 @@
 #include <stdio.h>
 #include <string>
 #include <sys/ioctl.h>
+
+#include <sys/resource.h>
+
 #include <sys/time.h>
 #include <errno.h>
+#include <sys/types.h>
 
 #include <iostream>
 #include <cmath>
@@ -521,12 +525,27 @@ void destroyFlows(CommonCyclicRing* rings[])
     }
   }
 }
+void ShowLimit()
+{
+   rlimit lim;
+   int err=getrlimit(RLIMIT_NOFILE,&lim);
+   printf("%1d limit: %1ld,%1ld\n",err,lim.rlim_cur,lim.rlim_max);
+}
 
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
 int main(int argc, char *argv[])
 {
+  int hash_colision_cnt =0;
+  ShowLimit();
+  rlimit lim;
+   lim.rlim_cur=100000;
+   lim.rlim_max=100000;
+   int err=setrlimit(RLIMIT_NOFILE,&lim);
+   printf("set returned %1d\n",err);
+
+   ShowLimit();
 
 	printf("-------------------------------------------------------------\n");
 	printf("streamCaptureDemo                                            \n");
@@ -534,6 +553,7 @@ int main(int argc, char *argv[])
 	//struct RXSock fds[1024];
 	CommonCyclicRing* pRings[MAX_RINGS];
 	int uniqueRings;
+  char HashColision[MAX_RINGS][256] = { 0};
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 	for (int j = 0; j < MAX_RINGS; j++) {
 		pRings[j] = NULL;
@@ -574,7 +594,7 @@ int main(int argc, char *argv[])
 			flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr));
 			printf("adding port %s port %d,\n", ip.c_str(), port);
 			flow.hash = hashIpPort2(flow.addr);
-			printf("hash1 value is %d\n", flow.hash);
+			//printf("hash1 value is %d\n", flow.hash);
 			if (flow.addr.sin_addr.s_addr < 0x01000001) {
 				printf("Error - illegal IP %x\n", flow.addr.sin_addr.s_addr);
 				exit(-1);
@@ -583,7 +603,7 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		if (iss >> ring_id) {
-      printf ("read ring id %d\n",ring_id);
+      //printf ("read ring id %d\n",ring_id);
 		} else {
 			printf("no common rings\n");
 			ring_id = lineNum;
@@ -591,8 +611,15 @@ int main(int argc, char *argv[])
 			ringPerFd = true;
 		}
 		flow.ring_id = ring_id;
-		// add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
-		AddFlow(flow, pRings, uniqueRings);
+    if ( HashColision[ring_id][flow.hash] == 0 ) {
+        HashColision[ring_id][flow.hash] = 1;
+        // add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
+  	    AddFlow(flow, pRings, uniqueRings);
+    }
+    else {
+        printf ("Hash colision found, socket %s:%d - dropped - total %d\n",ip.c_str(), port, hash_colision_cnt+1);
+        hash_colision_cnt++;
+    }
 		if (socketRead == sock_num) {
 			printf("read %d sockets from the file\n", socketRead);
 			break;
@@ -700,7 +727,7 @@ int main(int argc, char *argv[])
 		for (it = pRings[i]->addr_vect.begin();
 				it!=pRings[i]->addr_vect.end(); ++it) {
 			struct ip_mreqn mc;
-			printf("Adding socket to ring %d\n",i);
+			//printf("Adding socket to ring %d\n",i);
 			RXSock* pSock = new RXSock;
 			pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
 			if (pSock->fd <= 0) {
@@ -719,7 +746,7 @@ int main(int argc, char *argv[])
 			pSock->bad_packets = 0;
 			pSock->sin_port = ntohs((*it)->sin_port);
 			unsigned char hash = hashIpPort2(**it);
-			printf("hash value is %d\n",hash);
+			//printf("hash value is %d\n",hash);
 			if ( NULL != pRings[i]->hashedSock[hash] ) {
 				printf ("Collision, reshuffle your ip addresses \n");
 				exit(67);
