@@ -2,7 +2,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <sched.h>
-//#include <time.h>
+#include <time.h>
 #include <set>
 #include <stdlib.h>
 #include <netinet/in.h>
@@ -10,12 +10,8 @@
 #include <stdio.h>
 #include <string>
 #include <sys/ioctl.h>
-
-#include <sys/resource.h>
-
 #include <sys/time.h>
 #include <errno.h>
-#include <sys/types.h>
 
 #include <iostream>
 #include <cmath>
@@ -69,7 +65,6 @@ int sock_num;
 int threads_num;
 int sleep_time;
 unsigned int g_totalPacketsProcessed =0;
-unsigned int g_totalbad =0;
 
 struct pesinfo {
 	int		lastcc;
@@ -130,9 +125,28 @@ class CommonCyclicRing {
     CommonCyclicRing():numOfSockets(0),ring_fd(0){
     for (int i=0; i < 256; i++ ) {
       hashedSock[i] = NULL;
-    }
-  }
+    	}
+	
+    	}
+	void PrintInfo();
 };
+
+void CommonCyclicRing::PrintInfo()
+{
+	int bad_packets =0,packetCount=0, packetDrop=0;
+	for(int i=0; i< numOfSockets; i++) {
+		bad_packets += sock_vect[i]->bad_packets;
+		sock_vect[i]->bad_packets=0;
+		packetCount += sock_vect[i]->rxCount;
+		sock_vect[i]->rxCount=0;
+		packetDrop += sock_vect[i]->rxDrop;
+		sock_vect[i]->rxDrop=0;
+		}
+	printf("++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+	printf("| rng id| sockets | Packets  | drop     | bad      |\n");
+	printf("| %02d\t| %04d    | %08d | %08d | %08d |\n", ring_id,numOfSockets,packetCount,packetDrop,bad_packets);
+	printf("+++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+}
 
 class RXThread {
 public:
@@ -191,16 +205,18 @@ static int CreateRingProfile(bool CommonFdPerRing, int RingProfile, int user_id,
   profile.ring_profile_key = RingProfile;
   if (CommonFdPerRing ) {	
 		profile.user_id =user_id;
-		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
-							VMA_RING_ALLOC_MASK_RING_USER_ID	  |
-							VMA_RING_ALLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
+							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
+							VMA_RING_ALLLOC_MASK_RING_USER_ID	  |
+							VMA_RING_ALLLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_USER_ID;
   }
   else {
-		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
-							VMA_RING_ALLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
+							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
+							VMA_RING_ALLLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_SOCKET;
@@ -386,7 +402,6 @@ void *run_stride(void *arg)
 	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin();
 			pRing != t->rings.end(); ++pRing) {
 		int sock_len = (*pRing)->numOfSockets;
-    printf("num of Sockets = %d\n",sock_len);
 		for (int i = 0; i < sock_len; i++) {
 			int ring_fd_num = vma_api->get_socket_rings_num((*pRing)->sock_vect[i]->fd);
 			int* ring_fds = new int[ring_fd_num];
@@ -398,7 +413,7 @@ void *run_stride(void *arg)
 	}
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
-	struct vma_completion_cb_t completion;
+	struct vma_completion_mp_t completion;
 	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->numOfRings; i++) {
 			for (int j = 0; j < 10; j++) {
@@ -416,8 +431,7 @@ void *run_stride(void *arg)
 				}
 				data = ((uint8_t *) completion.payload_ptr);
 				// printf("run_stride: parsing %d packets\n",(int)completion.packets);
-				t->rings[i]->fvalidatePackets(data, completion.packets,
-						t->rings[i]);
+				t->rings[i]->fvalidatePackets(data, completion.packets,t->rings[i]);
 			}
 		}
 		usleep(sleep_time);
@@ -496,9 +510,7 @@ const char* get_sceanrio_str(int scen)
 void AddFlow(flow_param flow,CommonCyclicRing* rings[], int &uniqueRings)
 {
   int ring_id = flow.ring_id;
-  printf ("%s, id = %d\n",__func__,flow.ring_id);
   if ( rings[ring_id] == NULL ) {
-    printf("Adding Ring id %d\n",ring_id);
     rings[ring_id] = new CommonCyclicRing;
     rings[ring_id]->ring_id =ring_id;
     uniqueRings++;
@@ -523,27 +535,12 @@ void destroyFlows(CommonCyclicRing* rings[])
     }
   }
 }
-void ShowLimit()
-{
-   rlimit lim;
-   int err=getrlimit(RLIMIT_NOFILE,&lim);
-   printf("%1d limit: %1ld,%1ld\n",err,lim.rlim_cur,lim.rlim_max);
-}
 
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
 int main(int argc, char *argv[])
 {
-  int hash_colision_cnt =0;
-  ShowLimit();
-  rlimit lim;
-   lim.rlim_cur=100000;
-   lim.rlim_max=100000;
-   int err=setrlimit(RLIMIT_NOFILE,&lim);
-   printf("set returned %1d\n",err);
-
-   ShowLimit();
 
 	printf("-------------------------------------------------------------\n");
 	printf("streamCaptureDemo                                            \n");
@@ -551,7 +548,6 @@ int main(int argc, char *argv[])
 	//struct RXSock fds[1024];
 	CommonCyclicRing* pRings[MAX_RINGS];
 	int uniqueRings;
-  char HashColision[MAX_RINGS][256] = { 0};
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 	for (int j = 0; j < MAX_RINGS; j++) {
 		pRings[j] = NULL;
@@ -592,7 +588,7 @@ int main(int argc, char *argv[])
 			flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr));
 			printf("adding port %s port %d,\n", ip.c_str(), port);
 			flow.hash = hashIpPort2(flow.addr);
-			//printf("hash1 value is %d\n", flow.hash);
+			printf("hash1 value is %d\n", flow.hash);
 			if (flow.addr.sin_addr.s_addr < 0x01000001) {
 				printf("Error - illegal IP %x\n", flow.addr.sin_addr.s_addr);
 				exit(-1);
@@ -601,7 +597,6 @@ int main(int argc, char *argv[])
 			continue;
 		}
 		if (iss >> ring_id) {
-      //printf ("read ring id %d\n",ring_id);
 		} else {
 			printf("no common rings\n");
 			ring_id = lineNum;
@@ -609,15 +604,8 @@ int main(int argc, char *argv[])
 			ringPerFd = true;
 		}
 		flow.ring_id = ring_id;
-    if ( HashColision[ring_id][flow.hash] == 0 ) {
-        HashColision[ring_id][flow.hash] = 1;
-        // add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
-  	    AddFlow(flow, pRings, uniqueRings);
-    }
-    else {
-        printf ("Hash colision found, socket %s:%d - dropped - total %d\n",ip.c_str(), port, hash_colision_cnt+1);
-        hash_colision_cnt++;
-    }
+		// add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
+		AddFlow(flow, pRings, uniqueRings);
 		if (socketRead == sock_num) {
 			printf("read %d sockets from the file\n", socketRead);
 			break;
@@ -709,6 +697,7 @@ int main(int argc, char *argv[])
     	ring.ring_cyclicb.num = (1<<17);
 		// user packet size ( not including the un-scattered data
     	ring.ring_cyclicb.stride_bytes = 1400;
+		ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
 		int res = vma_api->vma_add_ring_profile(&ring, &prof);
 		if (res) {
 			printf("failed adding ring profile");
@@ -724,7 +713,7 @@ int main(int argc, char *argv[])
 		for (it = pRings[i]->addr_vect.begin();
 				it!=pRings[i]->addr_vect.end(); ++it) {
 			struct ip_mreqn mc;
-			//printf("Adding socket to ring %d\n",i);
+			printf("Adding socket to ring %d\n",i);
 			RXSock* pSock = new RXSock;
 			pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
 			if (pSock->fd <= 0) {
@@ -743,7 +732,7 @@ int main(int argc, char *argv[])
 			pSock->bad_packets = 0;
 			pSock->sin_port = ntohs((*it)->sin_port);
 			unsigned char hash = hashIpPort2(**it);
-			//printf("hash value is %d\n",hash);
+			printf("hash value is %d\n",hash);
 			if ( NULL != pRings[i]->hashedSock[hash] ) {
 				printf ("Collision, reshuffle your ip addresses \n");
 				exit(67);
@@ -770,22 +759,19 @@ int main(int argc, char *argv[])
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
 	}
-  printf("Distributing %d Unique ring(s) to %d thread(s)\n",uniqueRings, threads_num );
-	for (int var = 0, ringIdx = 1; var < uniqueRings; ringIdx++) {
+	for (int var = 0, ringIdx = 1; var < uniqueRings; ++var, ringIdx++) {
 		if (ringIdx >= MAX_RINGS)
 			break;
 		if (pRings[ringIdx] == NULL) {
-      printf("ringIdx %d is null\n",ringIdx);
 			continue;
 		}
-   	int thread_id = var % threads_num;
-    var++;
+		int thread_id = var % threads_num;
 		printf("Assigning ring %d to thread %d \n", ringIdx, thread_id);
 		rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
 		rxThreads[thread_id].numOfRings++;
 		rxThreads[thread_id].max_s = max_s;
 		rxThreads[thread_id].min_s = min_s;
-//		ringIdx++;
+		ringIdx++;
 	}
 
 	for (int i = 0; i < threads_num; i++) {
@@ -845,24 +831,16 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 //	printf("%s\n",__func__);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned char hash = getHashValFromPacket(data);
-		//due to error in HW few packets have 00 in CX5!!!
-		if (!hash){
-			g_totalbad++;
-			continue;
-		}
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
 		data+= STRIDE_SIZE;
-	}
+		}
 	unsigned long long currentTime = time_get_usec();
-	for (int i = 0; i < pRing->numOfSockets; i++) {
-		RXSock* pSock = pRing->sock_vect[i];
-		if (currentTime > pSock->statTime) {
-			//printf("num of sockets %d\n",pRing->numOfSockets);
-			pSock->fprintinfo(pSock);
+	RXSock* pSock = pRing->sock_vect[0];
+		if (currentTime > pSock->statTime) {  
+			pRing->PrintInfo();
 			pSock->statTime = currentTime + PRINT_PERIOD;
 			}
-		}	
-}
+}	
 
 void checkMpegTsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {
@@ -1024,7 +1002,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 
 static void printdummyInfo(RXSock* sock)
 {
- 	printf("<%s:%u>: didnt not received packets\n",sock->ipAddress,sock->sin_port);
+
 }
 
 static inline void printRtpInfo(RXSock* sock)
@@ -1033,17 +1011,15 @@ static inline void printRtpInfo(RXSock* sock)
 	if (currentTime < sock->statTime)
 		return;
 
-	printf("<%s:%u>: received %d packets, %d drops bad %d global bad %d\n",
+	printf("<%s:%u>: received %d packets, %d drops bad %d\n",
 			sock->ipAddress,
 			sock->sin_port,
 			(int)sock->rxCount/PRINT_PERIOD_SEC,
-			(int)sock->rxDrop, sock->bad_packets,
-			g_totalbad);
+			(int)sock->rxDrop, sock->bad_packets);
 	sock->rxCount = 0;
 	sock->rxDrop = 0;
 	sock->bad_packets = 0;
 	sock->statTime = currentTime + PRINT_PERIOD;
-	g_totalbad = 0;
 }
 
 static inline void printMpegTsInfo(RXSock* sock)
@@ -1072,8 +1048,6 @@ static inline void printMpegTsInfo(RXSock* sock)
 		sock->rxCount=0;
 	}
 }
-
-
 
 #define GVSP_PT_INIT -1
 #define GVSP_PT_TRAILER 2
