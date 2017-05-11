@@ -208,18 +208,16 @@ static int CreateRingProfile(bool CommonFdPerRing, int RingProfile, int user_id,
   profile.ring_profile_key = RingProfile;
   if (CommonFdPerRing ) {	
 		profile.user_id =user_id;
-		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
-							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
-							VMA_RING_ALLLOC_MASK_RING_USER_ID	  |
-							VMA_RING_ALLLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
+							VMA_RING_ALLOC_MASK_RING_USER_ID	  |
+							VMA_RING_ALLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_USER_ID;
   }
   else {
-		profile.comp_mask = VMA_RING_ALLLOC_MASK_RING_PROFILE_IDX|
-							VMA_RING_ALLLOC_MASK_RING_ALLOC_LOGIC |
-							VMA_RING_ALLLOC_MASK_RING_INGRESS;
+		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY|
+							VMA_RING_ALLOC_MASK_RING_INGRESS;
 
     // if we want several Fd's per ring, we need to assign RING_LOGIC_PER_THREAD / RING_LOGIC_PER_CORE
 		profile.ring_alloc_logic = RING_LOGIC_PER_SOCKET;
@@ -416,7 +414,7 @@ void *run_stride(void *arg)
 	}
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
-	struct vma_completion_mp_t completion;
+	struct vma_completion_cb_t completion;
 	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->numOfRings; i++) {
 			for (int j = 0; j < 10; j++) {
@@ -722,7 +720,7 @@ int main(int argc, char *argv[])
     	ring.ring_cyclicb.num = (1<<17);
 		// user packet size ( not including the un-scattered data
     	ring.ring_cyclicb.stride_bytes = 1400;
-		ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
+		//ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
 		int res = vma_api->vma_add_ring_profile(&ring, &prof);
 		if (res) {
 			printf("failed adding ring profile");
