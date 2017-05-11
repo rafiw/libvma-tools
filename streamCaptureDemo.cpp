@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/time.h>
 #include <errno.h>
 
@@ -51,6 +52,7 @@
 #define PRINT_PERIOD_SEC		5
 #define PRINT_PERIOD 			1000000 * PRINT_PERIOD_SEC
 #define MAX_RINGS 1000
+#define MAX_SOCKETS_PER_RING 2000
 #define STRIDE_SIZE				2048
 
 int (*vma_recvmmsg)(int, void *, int, int, void *);
@@ -108,7 +110,7 @@ public:
   };
 struct flow_param {
   int ring_id;
-  unsigned char hash;
+  unsigned short hash;
   sockaddr_in addr;
 };
 
@@ -118,12 +120,12 @@ class CommonCyclicRing {
     int numOfSockets;
     int ring_id;
 	int ring_fd;
-    RXSock* hashedSock[256];
+    RXSock* hashedSock[MAX_SOCKETS_PER_RING];
     std::vector<sockaddr_in*> addr_vect;
     std::vector<RXSock*> sock_vect;
 	validatePackets	fvalidatePackets;
     CommonCyclicRing():numOfSockets(0),ring_fd(0){
-    for (int i=0; i < 256; i++ ) {
+    for (int i=0; i < MAX_SOCKETS_PER_RING; i++ ) {
       hashedSock[i] = NULL;
     	}
 	
@@ -161,18 +163,19 @@ public:
 };
 
 
-static unsigned char hashIpPort2(sockaddr_in addr );
-static inline unsigned char getHashValFromPacket(uint8_t* data);
+static unsigned short hashIpPort2(sockaddr_in addr );
+static inline unsigned short getHashValFromPacket(uint8_t* data);
 
 
 static void checkpacket(uint8_t* data, RXSock* sock);
 static void checkMpegTsPacket(uint8_t* data, RXSock* sock);
 static void checkRtpPacket(uint8_t* data, RXSock* sock);
 static void checkGVSPV2packet(uint8_t* data, RXSock* sock);
-
+/*
 static void checkMpegTsPackets(uint8_t* data,size_t packets,CommonCyclicRing* pRing);
 static void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
 static void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
+*/
 static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
 	
@@ -535,18 +538,33 @@ void destroyFlows(CommonCyclicRing* rings[])
     }
   }
 }
+void ShowLimit()
+{
+  rlimit lim;
+  int err = getrlimit(RLIMIT_NOFILE,&lim);
+  printf("%d limit: %1ld,%1ld\n",err,lim.rlim_cur,lim.rlim_max);
+}
 
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
 int main(int argc, char *argv[])
 {
+  int hash_colision_cnt=0;
+  ShowLimit();
+  rlimit lim;
+  lim.rlim_cur=100000;
+  lim.rlim_max=100000;
+  int err = setrlimit(RLIMIT_NOFILE,&lim);
+  printf("set rlimit returned %d\n",err);
+  ShowLimit();
 
 	printf("-------------------------------------------------------------\n");
 	printf("streamCaptureDemo                                            \n");
 	printf("-------------------------------------------------------------\n");
 	//struct RXSock fds[1024];
 	CommonCyclicRing* pRings[MAX_RINGS];
+  char HashColision[MAX_RINGS][MAX_SOCKETS_PER_RING] ={0};
 	int uniqueRings;
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 	for (int j = 0; j < MAX_RINGS; j++) {
@@ -586,9 +604,9 @@ int main(int argc, char *argv[])
 			flow.addr.sin_port = htons(port);
 			flow.addr.sin_addr.s_addr = inet_addr(ip.c_str());
 			flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr));
-			printf("adding port %s port %d,\n", ip.c_str(), port);
+			//printf("adding ip %s port %d,\n", ip.c_str(), port);
 			flow.hash = hashIpPort2(flow.addr);
-			printf("hash1 value is %d\n", flow.hash);
+			//printf("hash1 value is %d\n", flow.hash);
 			if (flow.addr.sin_addr.s_addr < 0x01000001) {
 				printf("Error - illegal IP %x\n", flow.addr.sin_addr.s_addr);
 				exit(-1);
@@ -604,8 +622,15 @@ int main(int argc, char *argv[])
 			ringPerFd = true;
 		}
 		flow.ring_id = ring_id;
-		// add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
-		AddFlow(flow, pRings, uniqueRings);
+    if (HashColision[ring_id][flow.hash] == 0) {
+      HashColision[ring_id][flow.hash]=1;
+      // add the fd to the ring, if needed create a ring, update num of rings, and num of flows within this ring.
+		  AddFlow(flow, pRings, uniqueRings);
+    }
+    else {
+      hash_colision_cnt++;
+      printf("Hash socket colision found , socket%s:%d - dropped, total %d\n",ip.c_str(),port,hash_colision_cnt);
+    }
 		if (socketRead == sock_num) {
 			printf("read %d sockets from the file\n", socketRead);
 			break;
@@ -713,7 +738,7 @@ int main(int argc, char *argv[])
 		for (it = pRings[i]->addr_vect.begin();
 				it!=pRings[i]->addr_vect.end(); ++it) {
 			struct ip_mreqn mc;
-			printf("Adding socket to ring %d\n",i);
+			//printf("Adding socket to ring %d\n",i);
 			RXSock* pSock = new RXSock;
 			pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
 			if (pSock->fd <= 0) {
@@ -731,8 +756,8 @@ int main(int argc, char *argv[])
 			pSock->fprintinfo = printdummyInfo;
 			pSock->bad_packets = 0;
 			pSock->sin_port = ntohs((*it)->sin_port);
-			unsigned char hash = hashIpPort2(**it);
-			printf("hash value is %d\n",hash);
+			unsigned short hash = hashIpPort2(**it);
+			//printf("hash value is %d\n",hash);
 			if ( NULL != pRings[i]->hashedSock[hash] ) {
 				printf ("Collision, reshuffle your ip addresses \n");
 				exit(67);
@@ -830,7 +855,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 {	
 //	printf("%s\n",__func__);
 	for (size_t k = 0; k < packets; k++) {		
-		unsigned char hash = getHashValFromPacket(data);
+		unsigned short hash = getHashValFromPacket(data);
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
 		data+= STRIDE_SIZE;
 		}
@@ -841,7 +866,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 			pSock->statTime = currentTime + PRINT_PERIOD;
 			}
 }	
-
+/*
 void checkMpegTsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {
 	RXSock* pSock = pRing->sock_vect[0];
@@ -874,7 +899,7 @@ void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 	}
 	printGvspInfo(pSock);
 }
-
+*/
 void checkpacket(uint8_t* data, RXSock* sock)
 {
 	uint8_t* pdata = data;
@@ -1135,11 +1160,12 @@ void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 }
 
 
-unsigned char hashIpPort2(sockaddr_in addr )
+unsigned short hashIpPort2(sockaddr_in addr )
 {
   int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  return smallHash;
+  unsigned short mhash = (((addr.sin_port & 0x3) << 8) | smallHash ) ;
+  return mhash;
 }
 #define IP_HEADER_OFFSET 14
 #define IP_HEADER_SIZE   20
@@ -1147,14 +1173,15 @@ unsigned char hashIpPort2(sockaddr_in addr )
 #define UDP_HEADER_OFFSET (IP_HEADER_SIZE + IP_HEADER_OFFSET )
 #define PORT_DEST_OFFSET  (UDP_HEADER_OFFSET + 2)
 
-unsigned char getHashValFromPacket(uint8_t* data)
+unsigned short getHashValFromPacket(uint8_t* data)
 {
 	unsigned int* pIP = (unsigned int*)&data[IP_DEST_OFFSET];
 	unsigned short* pPort = (unsigned short*)&data[PORT_DEST_OFFSET];
 	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
-  	unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
+  unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
+  unsigned short mhash = (((*pPort & 0x3) << 8) | smallHash ) ;
 	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
-	return smallHash;	
+	return mhash;	
 }
 
 
