@@ -52,7 +52,7 @@
 #define PRINT_PERIOD_SEC		5
 #define PRINT_PERIOD 			1000000 * PRINT_PERIOD_SEC
 #define MAX_RINGS 1000
-#define MAX_SOCKETS_PER_RING 2000
+#define MAX_SOCKETS_PER_RING 4096
 #define STRIDE_SIZE				2048
 
 int (*vma_recvmmsg)(int, void *, int, int, void *);
@@ -126,7 +126,7 @@ class CommonCyclicRing {
 	validatePackets	fvalidatePackets;
     CommonCyclicRing():numOfSockets(0),ring_fd(0){
     for (int i=0; i < MAX_SOCKETS_PER_RING; i++ ) {
-      hashedSock[i] = NULL;
+      hashedSock[i] = 0;
     	}
 	
     	}
@@ -856,7 +856,7 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {	
-//	printf("%s\n",__func__);
+	printf("%s, ring id = %d\n",__func__,pRing->ring_id);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned short hash = getHashValFromPacket(data);
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
@@ -1167,7 +1167,7 @@ unsigned short hashIpPort2(sockaddr_in addr )
 {
   int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = (((addr.sin_addr.s_addr & 0x3) << 8) | smallHash ) ;
+  unsigned short mhash = (((addr.sin_addr.s_addr & 0x7) << 8) | smallHash ) ;
   return mhash;
 }
 #define IP_HEADER_OFFSET 14
@@ -1182,7 +1182,7 @@ unsigned short getHashValFromPacket(uint8_t* data)
 	unsigned short* pPort = (unsigned short*)&data[PORT_DEST_OFFSET];
 	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = (((*pIP & 0x3) << 8) | smallHash ) ;
+  unsigned short mhash = (((*pIP & 0x7) << 8) | smallHash ) ;
 	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
 	return mhash;	
 }
