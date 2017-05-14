@@ -1168,8 +1168,8 @@ unsigned short hashIpPort2(sockaddr_in addr )
 {
   int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = ((((addr.sin_addr.s_addr >>24) & 0xd) << 7) | smallHash ) ;
-  printf("0x%x\n",addr.sin_addr.s_addr);
+  unsigned short mhash = ((((addr.sin_addr.s_addr >>24) & 0x7) << 8) | smallHash ) ;
+//  printf("0x%x\n",addr.sin_addr.s_addr);
   return mhash;
 }
 #define IP_HEADER_OFFSET 14
@@ -1184,7 +1184,7 @@ unsigned short getHashValFromPacket(uint8_t* data)
 	unsigned short* pPort = (unsigned short*)&data[PORT_DEST_OFFSET];
 	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = (((((*pIP) >>24) & 0xd) << 7) | smallHash ) ;
+  unsigned short mhash = (((((*pIP) >>24) & 0x7) << 8) | smallHash ) ;
   //printf("0x%x\n",(*pIP));
 	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
 	return mhash;	
