@@ -148,10 +148,10 @@ void CommonCyclicRing::PrintInfo()
 		packetDrop += sock_vect[i]->rxDrop;
 		sock_vect[i]->rxDrop=0;
 		}
-	printf("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
-	printf("| rng id| sockets | dead sock | Packets  | drop     | bad      |\n");
+	printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+	printf("| rng id| sockets | dead sock | Packets  | drop     | bad    |\n");
 	printf("| %02d\t| %04d    |  %04d   | %08d | %08d | %08d |\n", ring_id,numOfSockets,dead_sockets,packetCount,packetDrop,bad_packets);
-	printf("+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+	//printf("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
 }
 
 class RXThread {
