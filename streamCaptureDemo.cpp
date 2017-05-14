@@ -1006,10 +1006,10 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 					for (int p = 0; p < MAX_PIDS_TS; p++) {
 						if (sock->rPids[p] == 0x1FFF) {
 							sock->rPids[p] = pid;
-							printf("\n<%s:%u>:(pes-%d): Adding new pid to DB, in index %d, pid 0x%x\n",
-								sock->ipAddress,
-								sock->sin_port,
-								pes, p, pid);
+							//printf("\n<%s:%u>:(pes-%d): Adding new pid to DB, in index %d, pid 0x%x\n",
+								//sock->ipAddress,
+								//sock->sin_port,
+								//pes, p, pid);
 							break;
 						}
 					}
@@ -1166,7 +1166,7 @@ unsigned short hashIpPort2(sockaddr_in addr )
 {
   int hash = ((size_t)(addr.sin_addr.s_addr) * 59) ^ ((size_t)(addr.sin_port) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = (((addr.sin_port & 0x3) << 8) | smallHash ) ;
+  unsigned short mhash = (((addr.sin_addr.s_addr & 0x3) << 8) | smallHash ) ;
   return mhash;
 }
 #define IP_HEADER_OFFSET 14
@@ -1181,7 +1181,7 @@ unsigned short getHashValFromPacket(uint8_t* data)
 	unsigned short* pPort = (unsigned short*)&data[PORT_DEST_OFFSET];
 	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
-  unsigned short mhash = (((*pPort & 0x3) << 8) | smallHash ) ;
+  unsigned short mhash = (((*pIP & 0x3) << 8) | smallHash ) ;
 	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
 	return mhash;	
 }
