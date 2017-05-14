@@ -419,6 +419,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
+  printf("number of rings = %d\n",t->numOfRings);
 	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->numOfRings; i++) {
 			for (int j = 0; j < 10; j++) {
@@ -856,7 +857,7 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
 {	
-	printf("%s, ring id = %d\n",__func__,pRing->ring_id);
+//	printf("%s, ring id = %d\n",__func__,pRing->ring_id);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned short hash = getHashValFromPacket(data);
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
