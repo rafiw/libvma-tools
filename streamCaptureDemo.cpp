@@ -800,7 +800,7 @@ int main(int argc, char *argv[])
 		rxThreads[thread_id].numOfRings++;
 		rxThreads[thread_id].max_s = max_s;
 		rxThreads[thread_id].min_s = min_s;
-		ringIdx++;
+		//ringIdx++;
 	}
 
 	for (int i = 0; i < threads_num; i++) {
