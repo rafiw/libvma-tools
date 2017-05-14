@@ -609,7 +609,7 @@ int main(int argc, char *argv[])
 			flow.addr.sin_addr.s_addr = ntohl(ntohl(flow.addr.sin_addr.s_addr));
 			//printf("adding ip %s port %d,\n", ip.c_str(), port);
 			flow.hash = hashIpPort2(flow.addr);
-			printf("adding %s:%d hash val %d\n",ip.c_str(),port flow.hash);
+			printf("adding %s:%d hash val %d\n",ip.c_str(),port, flow.hash);
 			if (flow.addr.sin_addr.s_addr < 0x01000001) {
 				printf("Error - illegal IP %x\n", flow.addr.sin_addr.s_addr);
 				exit(-1);
