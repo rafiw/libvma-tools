@@ -623,6 +623,7 @@ int main(int argc, char *argv[])
 			lineNum++;
 			ringPerFd = true;
 		}
+    printf("ring_id = %d\n",ring_id);
 		flow.ring_id = ring_id;
     if (HashColision[ring_id][flow.hash] == 0) {
       HashColision[ring_id][flow.hash]=1;
