@@ -1184,6 +1184,7 @@ unsigned short getHashValFromPacket(uint8_t* data)
 	int hash = ((size_t)(*pIP) * 59) ^ ((size_t)(*pPort) << 16);
   unsigned char smallHash = (unsigned char)(((unsigned char) ((hash*19) >> 24 ) )  ^ ((unsigned char) ((hash*17) >> 16 )) ^ ((unsigned char) ((hash*5) >> 8) ) ^ ((unsigned char) hash));
   unsigned short mhash = (((*pIP & 0xd) << 7) | smallHash ) ;
+  printf("0x%x\n",(*pIP));
 	//printf(" IP address is %u, port is %u, hash val is %u\n",(unsigned) data[IP_DEST_OFFSET],(unsigned )data[PORT_DEST_OFFSET],smallHash);
 	return mhash;	
 }
