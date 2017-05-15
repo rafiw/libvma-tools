@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <ctime>
 #include <sys/time.h>
 #include <errno.h>
 
@@ -121,7 +122,8 @@ class CommonCyclicRing {
     int ring_id;
 	int ring_fd;
     RXSock* hashedSock[MAX_SOCKETS_PER_RING];
-    std::vector<sockaddr_in*> addr_vect;
+	std::ofstream * pOutputfile;
+	std::vector<sockaddr_in*> addr_vect;
     std::vector<RXSock*> sock_vect;
 	validatePackets	fvalidatePackets;
     CommonCyclicRing():numOfSockets(0),ring_fd(0){
@@ -140,11 +142,16 @@ void CommonCyclicRing::PrintInfo()
 		bad_packets += sock_vect[i]->bad_packets;
 		sock_vect[i]->bad_packets=0;
     int count = sock_vect[i]->rxCount;
-    if ( count == 0 )
+    if ( count == 0 ) {
       dead_sockets++;
+	  *pOutputfile << "ring " << ring_id << "socket " << sock_vect[i]->ipAddress << ":" << sock_vect[i]->sin_port << " Is dead" << std::endl;
+    	}
     else
   		packetCount += count;
 		sock_vect[i]->rxCount=0;
+		if (sock_vect[i]->rxDrop > 0 ) {
+			*pOutputfile <<  "ring " << ring_id << "socket " << sock_vect[i]->ipAddress << ":" << sock_vect[i]->sin_port << " " << sock_vect[i]->rxDrop << " drops" << std::endl;
+			}
 		packetDrop += sock_vect[i]->rxDrop;
 		sock_vect[i]->rxDrop=0;
 		}
@@ -156,11 +163,30 @@ void CommonCyclicRing::PrintInfo()
 
 class RXThread {
 public:
-  RXThread():numOfRings(0){}
+  RXThread(int idx =0):numOfRings(0)
+{
+	thread_idx= idx;
+	time_t rawtime;
+  	struct tm * timeinfo;
+  	char buffer[80];
+	time (&rawtime);
+  	timeinfo = localtime(&rawtime);
+	strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
+  	std::string currtimestampe(buffer);  	
+  	std::string fname = "VMA_THD_" + thread_idx;
+  	outputfile.open(fname.c_str(),std::ofstream::out | std::ofstream::app);
+	outputfile << "******************************************" << std::endl;
+	outputfile << "VMA cyclic Buffer" << std::endl;
+	outputfile << "******************************************" << std::endl << std::endl;
+	outputfile << currtimestampe << std::endl;
+	
+  	}
 	pthread_t	t;
   std::vector<CommonCyclicRing*> rings;
+  std::ofstream outputfile;
   int numOfRings;
 //	RXSock	*sock[MAX_SOCKETS_THREAD];
+	int thread_idx;
 	int		sock_len;
 	size_t		min_s;
 	size_t		max_s;
@@ -420,7 +446,8 @@ void *run_stride(void *arg)
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
   printf("number of rings = %d\n",t->numOfRings);
-	for (int iter = 0; iter < 1000000; iter++) {
+	while (1) {
+//	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->numOfRings; i++) {
 			for (int j = 0; j < 10; j++) {
 				completion.packets = 0;
@@ -570,6 +597,9 @@ int main(int argc, char *argv[])
   char HashColision[MAX_RINGS][MAX_SOCKETS_PER_RING] ={0};
 	int uniqueRings;
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
+	for (int r=0; r< MAX_SOCKETS_THREAD; r++) {
+		rxThreads[r].thread_idx = r;
+		}
 	for (int j = 0; j < MAX_RINGS; j++) {
 		pRings[j] = NULL;
 	}
@@ -796,10 +826,12 @@ int main(int argc, char *argv[])
 		}
 		int thread_id = var % threads_num;
 		printf("Assigning ring %d to thread %d \n", ringIdx, thread_id);
+		pRings[ringIdx]->pOutputfile = &rxThreads[thread_id].outputfile;
 		rxThreads[thread_id].rings.push_back(pRings[ringIdx]);
 		rxThreads[thread_id].numOfRings++;
 		rxThreads[thread_id].max_s = max_s;
 		rxThreads[thread_id].min_s = min_s;
+		
 		//ringIdx++;
 	}
 
