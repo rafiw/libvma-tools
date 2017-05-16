@@ -118,6 +118,7 @@ struct flow_param {
 
 class CommonCyclicRing {
   public:
+    unsigned long printCount;
     int numOfSockets;
     int ring_id;
 	int ring_fd;
@@ -126,30 +127,46 @@ class CommonCyclicRing {
 	std::vector<sockaddr_in*> addr_vect;
     std::vector<RXSock*> sock_vect;
 	validatePackets	fvalidatePackets;
-    CommonCyclicRing():numOfSockets(0),ring_fd(0){
+    CommonCyclicRing():printCount(0),numOfSockets(0),ring_fd(0){
     for (int i=0; i < MAX_SOCKETS_PER_RING; i++ ) {
       hashedSock[i] = 0;
     	}
 	
     	}
 	void PrintInfo();
+  void printTime();
 };
+void CommonCyclicRing::printTime()
+{
+  	time_t rawtime;
+  	struct tm * timeinfo;
+  	char buffer[80];
+	time (&rawtime);
+  	timeinfo = localtime(&rawtime);
+	strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
+  	std::string currtimestampe(buffer);  	
+	*pOutputfile << currtimestampe << " ";
+}
 
 void CommonCyclicRing::PrintInfo()
 {
+  printCount++;
+
 	int bad_packets =0,packetCount=0, packetDrop=0, dead_sockets=0;
 	for(int i=0; i< numOfSockets; i++) {
 		bad_packets += sock_vect[i]->bad_packets;
 		sock_vect[i]->bad_packets=0;
     int count = sock_vect[i]->rxCount;
-    if ( count == 0 ) {
+    if (( count == 0 ) && (printCount > 10)) {
       dead_sockets++;
+      printTime();
 	  *pOutputfile << "ring " << ring_id << "socket " << sock_vect[i]->ipAddress << ":" << sock_vect[i]->sin_port << " Is dead" << std::endl;
     	}
     else
   		packetCount += count;
 		sock_vect[i]->rxCount=0;
-		if (sock_vect[i]->rxDrop > 0 ) {
+		if ((sock_vect[i]->rxDrop > 0 ) && (printCount >10 )) {
+      printTime();
 			*pOutputfile <<  "ring " << ring_id << "socket " << sock_vect[i]->ipAddress << ":" << sock_vect[i]->sin_port << " " << sock_vect[i]->rxDrop << " drops" << std::endl;
 			}
 		packetDrop += sock_vect[i]->rxDrop;
@@ -166,21 +183,9 @@ public:
   RXThread(int idx =0):numOfRings(0)
 {
 	thread_idx= idx;
-	time_t rawtime;
-  	struct tm * timeinfo;
-  	char buffer[80];
-	time (&rawtime);
-  	timeinfo = localtime(&rawtime);
-	strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
-  	std::string currtimestampe(buffer);  	
-  	std::string fname = "VMA_THD_" + thread_idx;
-  	outputfile.open(fname.c_str(),std::ofstream::out | std::ofstream::app);
-	outputfile << "******************************************" << std::endl;
-	outputfile << "VMA cyclic Buffer" << std::endl;
-	outputfile << "******************************************" << std::endl << std::endl;
-	outputfile << currtimestampe << std::endl;
 	
   	}
+  std::string nicName;
 	pthread_t	t;
   std::vector<CommonCyclicRing*> rings;
   std::ofstream outputfile;
@@ -190,6 +195,33 @@ public:
 	int		sock_len;
 	size_t		min_s;
 	size_t		max_s;
+  void openReportFile() 
+{
+  	time_t rawtime;
+  	struct tm * timeinfo;
+  	char buffer[80];
+	  time (&rawtime);
+  	timeinfo = localtime(&rawtime);
+	  strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
+  	std::string currtimestampe(buffer);  	
+  	std::string fname = "VMA_THD_" +nicName + "_";
+  	outputfile.open(fname.c_str(),std::ofstream::out | std::ofstream::app);
+	outputfile << "******************************************" << std::endl;
+	outputfile << "VMA cyclic Buffer" << std::endl;
+	outputfile << "******************************************" << std::endl << std::endl;
+	outputfile << currtimestampe << std::endl;
+}
+void printTime()
+{
+  	time_t rawtime;
+  	struct tm * timeinfo;
+  	char buffer[80];
+	time (&rawtime);
+  	timeinfo = localtime(&rawtime);
+	strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
+  	std::string currtimestampe(buffer);  	
+	outputfile << currtimestampe << " ";
+}
 };
 
 
@@ -599,6 +631,8 @@ int main(int argc, char *argv[])
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 	for (int r=0; r< MAX_SOCKETS_THREAD; r++) {
 		rxThreads[r].thread_idx = r;
+    rxThreads[r].nicName = argv[1];
+    rxThreads[r].openReportFile();
 		}
 	for (int j = 0; j < MAX_RINGS; j++) {
 		pRings[j] = NULL;
