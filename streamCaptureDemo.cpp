@@ -776,9 +776,6 @@ int main(int argc, char *argv[])
 	}
 	int prof = 0;
 	if (scenario == 2) {
-		// hack to start VMA
-		int dummy = vma_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-		vma_close(dummy);
 		struct vma_api_t *vma_api = vma_get_api();
 		if (vma_api == NULL) {
 			printf("VMA Extra API not found - working with default socket APIs, exiting");
