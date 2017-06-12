@@ -477,7 +477,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
-  printf("number of rings = %d\n",t->numOfRings);
+	printf("number of rings = %d\n",t->numOfRings);
 	while (1) {
 //	for (int iter = 0; iter < 1000000; iter++) {
 		for (int i = 0; i < t->numOfRings; i++) {
@@ -849,12 +849,13 @@ int main(int argc, char *argv[])
 	for (int var = 0; var < threads_num; ++var) {
 		rxThreads[var].sock_len = 0;
 	}
-	for (int var = 0, ringIdx = 1; var < uniqueRings; ++var, ringIdx++) {
+	for (int var = 0, ringIdx = 1; var < uniqueRings; ringIdx++) {
 		if (ringIdx >= MAX_RINGS)
 			break;
 		if (pRings[ringIdx] == NULL) {
 			continue;
 		}
+		++var;
 		int thread_id = var % threads_num;
 		printf("Assigning ring %d to thread %d \n", ringIdx, thread_id);
 		pRings[ringIdx]->pOutputfile = &rxThreads[thread_id].outputfile;
