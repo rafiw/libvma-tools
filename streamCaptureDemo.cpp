@@ -639,9 +639,13 @@ int main(int argc, char *argv[])
 	}
 	if (argc < 3) {
 		printf(
-				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
+				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num scenario [0,1,2] "
 						"sleep [min packet] [max packet] use_vma\n");
 		printf("   logs packet drops\n");
+		printf("   scenarios:\n");
+		printf("   0 %s\n", get_sceanrio_str(0));
+		printf("   1 %s\n", get_sceanrio_str(1));
+		printf("   2 %s\n", get_sceanrio_str(2));
 		printf("   \n");
 		exit(-1);
 	}
@@ -1040,6 +1044,8 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
 	} else {
 		sock->bad_packets++;
 	}
+	// clear data
+	memset(data, 0, 32);
 
 }
 
@@ -1050,8 +1056,9 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 	// skip mac IP and UDP hdr
     //	printf("%s data = 0x%lx\n", __func__, (unsigned long) data);
 	//g_totalPacketsProcessed++;
+	const int segment = 188;
 	sock->rxCount++;
-	for (int pes = 0; pes < 7; pes++, data += 188) {
+	for (int pes = 0; pes < 7; pes++, data += segment) {
 		uint32_t tsheader = htonl(*((uint32_t *) data));
 		pid = (uint16_t) ((tsheader & 0x1FFF00) >> 8);
 		if (0x47 == *data) {
@@ -1089,6 +1096,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 			//uint8_t* temp = data - 42;
 			//reportErrorPacket(temp, sock);
 		}
+		memset(data, 0, segment);
 	}
 }
 
@@ -1225,6 +1233,7 @@ void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 		sock->LastSequenceNumber = packet_id;
 		sock->lastPacketType = packet_type;
 	}
+	memset(data, 0, 32);
 }
 
 
