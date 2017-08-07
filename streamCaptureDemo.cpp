@@ -528,6 +528,7 @@ void *run_zero(void *arg)
 	uint8_t *data;
 	struct vma_api_t *vma_api = vma_get_api();
 	int flags = 0;
+	struct vma_packets_t* z_packet;
 	if (vma_api == NULL) {
 		printf("VMA Extra API not found - working with default socket APIs");
 		exit(1);
@@ -539,14 +540,17 @@ void *run_zero(void *arg)
 				RXSock* pSock = t->rings[r]->sock_vect[i];
 				for (int j = 0; j < 1000; j++) {
 					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, STRIDE_SIZE,&flags, NULL, NULL);
-					if (MSG_VMA_ZCOPY & flags)
-						data = (uint8_t *) ((struct vma_packets_t*) Dump)->pkts[0].iov[0].iov_base;
-					else
+					if (MSG_VMA_ZCOPY & flags) {
+						z_packet = (struct vma_packets_t*) Dump;
+						data = (uint8_t *) z_packet->pkts[0].iov[0].iov_base;
+					} else {
 						data = Dump;
+					}
 					if (size > 0) {
 						pSock->fvalidatePacket(data, pSock);
 						if (MSG_VMA_ZCOPY & flags) {
-							vma_api->free_packets(pSock->fd,((struct vma_packets_t*) Dump)->pkts,((struct vma_packets_t*) Dump)->n_packet_num);
+							z_packet = (struct vma_packets_t*) Dump;
+							vma_api->free_packets(pSock->fd, z_packet->pkts, z_packet->n_packet_num);
 						}
 					} else {
 						pSock->fprintinfo(pSock);
@@ -657,7 +661,7 @@ int main(int argc, char *argv[])
 	int port;
 	int ring_id;
 	int lineNum = 0;
-	int sock_num, socketRead = 0;
+	int sock_num = 0, socketRead = 0;
 
 	if (argc > 3) {
 		sock_num = atoi(argv[3]);
