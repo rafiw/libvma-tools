@@ -477,6 +477,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
+	completion.comp_mask = VMA_MP_MASK_TIMESTAMP;
 	printf("number of rings = %d\n",t->numOfRings);
 	while (1) {
 //	for (int iter = 0; iter < 1000000; iter++) {
