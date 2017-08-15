@@ -55,7 +55,7 @@
 #define MAX_RINGS 1000
 #define MAX_SOCKETS_PER_RING 4096
 #define STRIDE_SIZE				2048
-
+#define DEFAULT_VALUE			0xffffffff
 int (*vma_recvmmsg)(int, void *, int, int, void *);
 int (*vma_recv)(int, void *, int, int);
 int (*vma_socket)(int, int, int);
@@ -92,7 +92,7 @@ public:
 	int		rxDrop;
 	uint64_t	statTime;
 	int		lastBlockId;
-	int		LastSequenceNumber;
+	uint32_t	LastSequenceNumber;
 	int		lastPacketType;
 	int		index;
 	int		fd;
@@ -812,14 +812,14 @@ int main(int argc, char *argv[])
 				it!=pRings[i]->addr_vect.end(); ++it) {
 			struct ip_mreqn mc;
 			//printf("Adding socket to ring %d\n",i);
-			RXSock* pSock = new RXSock;
+			RXSock* pSock = new RXSock();
 			pSock->fd = OpenRxSocket(pRings[i]->ring_id,*it,0,argv[1],&mc,prof,!ringPerFd);
 			if (pSock->fd <= 0) {
 				printf("Error - rx open failed. %d\n", i);
 				exit(-1);
 			}
 			memcpy(&pSock->mc, &mc, sizeof(mc));
-			pSock->LastSequenceNumber = -1;
+			pSock->LastSequenceNumber = DEFAULT_VALUE;
 			pSock->lastBlockId = -1;
 			pSock->rxCount = 0;
 			pSock->rxDrop = 0;
@@ -914,17 +914,33 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 {
 //	printf("%s\n",__func__);
 	RXSock* pSock = pRing->sock_vect[0];
+#if 0 // validate simple increment number 1..n
 	for (size_t k = 0; k < packets; k++) {
-		pRing->sock_vect[0]->fvalidatePacket(data +42, pRing->sock_vect[0]);
-
+		long SequenceNumber = atol((char *)data+42);
+		pSock->rxCount++;
+		if (pSock->LastSequenceNumber + 1 != SequenceNumber) {
+			printf("error prev seq is %u, curr is %lu\n",pSock->LastSequenceNumber,SequenceNumber);
+			pSock->rxDrop++;
+		}
+		pSock->LastSequenceNumber = SequenceNumber;
 		data += STRIDE_SIZE;
 	}
 	unsigned long long currentTime = time_get_usec();
 	if (currentTime > pSock->statTime) {
-		//printf("check cc errors\n");
+		printRtpInfo(pSock);
+		pSock->statTime = currentTime + PRINT_PERIOD;
+	}
+#else
+	for (size_t k = 0; k < packets; k++) {
+		pSock->fvalidatePacket(data +42, pRing->sock_vect[0]);
+		data += STRIDE_SIZE;
+	}
+	unsigned long long currentTime = time_get_usec();
+	if (currentTime > pSock->statTime) {
 		pRing->sock_vect[0]->fprintinfo(pSock);
 		pSock->statTime = currentTime + PRINT_PERIOD;
-	}	
+	}
+#endif
 }
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
@@ -934,48 +950,15 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 		unsigned short hash = getHashValFromPacket(data);
 		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
 		data+= STRIDE_SIZE;
-		}
+	}
 	unsigned long long currentTime = time_get_usec();
 	RXSock* pSock = pRing->sock_vect[0];
 		if (currentTime > pSock->statTime) {  
 			pRing->PrintInfo();
 			pSock->statTime = currentTime + PRINT_PERIOD;
-			}
-}	
-/*
-void checkMpegTsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
-{
-	RXSock* pSock = pRing->sock_vect[0];
-	data += 42;
-	for (size_t k = 0; k < packets; k++) {
-		checkMpegTsPacket(data, pSock);
-		data += STRIDE_SIZE;
-	}
-	printMpegTsInfo(pSock);
+		}
 }
 
-void checkRtpPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
-{
-	RXSock* pSock = pRing->sock_vect[0];
-	data += 42;
-	for (size_t k = 0; k < packets; k++) {
-		checkRtpPacket(data, pSock);
-		data += STRIDE_SIZE;
-	}
-	printRtpInfo(pSock);
-}
-
-void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
-{
-	RXSock* pSock = pRing->sock_vect[0];
-	data += 42;
-	for (size_t k = 0; k < packets; k++) {
-		checkGVSPV2packet(data,  pSock);
-		data += STRIDE_SIZE;
-	}
-	printGvspInfo(pSock);
-}
-*/
 void checkpacket(uint8_t* data, RXSock* sock)
 {
 	uint8_t* pdata = data;
