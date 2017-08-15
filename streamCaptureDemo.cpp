@@ -1023,17 +1023,25 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
 	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
 		sock->rxCount++;
 		uint32_t SequenceNumber = htons(*(uint16_t *) (((uint8_t*) data) + 2));
-		uint32_t LostCount = (SequenceNumber + 0x10000
-				- sock->LastSequenceNumber - 1) & 0xFFFF;
-		if (sock->LastSequenceNumber >= 0)
+		uint32_t LostCount = SequenceNumber - sock->LastSequenceNumber - 1;
+		if (sock->LastSequenceNumber != DEFAULT_VALUE && sock->LastSequenceNumber == SequenceNumber) {
+			sock->rxDrop++;
+		}
+//		printf("%u\n",SequenceNumber);
+		if (SequenceNumber == 0 && sock->LastSequenceNumber == 0xffff) {
+
+			LostCount = 0;
+		}
+		if (sock->LastSequenceNumber >= 0 && sock->LastSequenceNumber != DEFAULT_VALUE) {
 			sock->rxDrop += LostCount;
+		}
+
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
 		sock->bad_packets++;
 	}
 	// clear data
-	memset(data, 0, 32);
-
+	*(uint16_t *)(data + 2) = 0xffff;
 }
 
 // packet base chekers, get the packet data pointer, after the IP/UDP
@@ -1083,7 +1091,7 @@ static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
 			//uint8_t* temp = data - 42;
 			//reportErrorPacket(temp, sock);
 		}
-		memset(data, 0, segment);
+		*(uint32_t *)(data) = 0;
 	}
 }
 
@@ -1217,10 +1225,12 @@ void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 			sock->rxDrop += packet_id - 1;
 		}
 		sock->lastBlockId = (int) block_id;
-		sock->LastSequenceNumber = packet_id;
+
 		sock->lastPacketType = packet_type;
 	}
-	memset(data, 0, 32);
+	*(uint32_t *)(data) = 0;
+	*(uint32_t *)(data[4]) = 0;
+
 }
 
 
