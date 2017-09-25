@@ -54,8 +54,8 @@
 #define PRINT_PERIOD 			1000000 * PRINT_PERIOD_SEC
 #define MAX_RINGS 1000
 #define MAX_SOCKETS_PER_RING 4096
-#define STRIDE_SIZE				2048
 #define DEFAULT_VALUE			0xffffffff
+
 int (*vma_recvmmsg)(int, void *, int, int, void *);
 int (*vma_recv)(int, void *, int, int);
 int (*vma_socket)(int, int, int);
@@ -64,6 +64,13 @@ int (*vma_setsockopt)(int, int, int, void *, int);
 int (*vma_ioctl)(int, int, void *);
 int (*vma_close)(int);
 
+int MAX_STRIDE_SIZE = 2048;
+int g_stride_size = 1400;
+int g_packet_size_to_skip = 1400;
+int g_net_size = 42;
+vma_cb_packet_rec_mode mode = RAW_PACKET;
+int use_payload_ptr = 1;
+int header_size = 0;
 int sock_num;
 int threads_num;
 int sleep_time;
@@ -107,7 +114,7 @@ public:
 	validatePacket	fvalidatePacket;
 	printInfo	fprintinfo;
   RXSock(){ pidTable = new pesinfo[8192]; }
-  virtual ~RXSock() { delete[] pidTable; }
+  ~RXSock() { delete[] pidTable; }
   };
 struct flow_param {
   int ring_id;
@@ -432,14 +439,14 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 void *run_copy(void *arg)
 {
 	struct RXThread *t = (struct RXThread *) arg;
-	uint8_t Dump[STRIDE_SIZE];
+	uint8_t Dump[MAX_STRIDE_SIZE];
 	printf("starting rx\n");
 	while (1) {
 		for (int r = 0; r < t->numOfRings; r++) {
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
 				for (int j = 0; j < 1000; j++) {
-					int size = vma_recv(pSock->fd, Dump, STRIDE_SIZE, MSG_NOSIGNAL);
+					int size = vma_recv(pSock->fd, Dump, MAX_STRIDE_SIZE, MSG_NOSIGNAL);
 					if (size > 0)
 						pSock->fvalidatePacket(Dump, pSock);
 					}
@@ -477,7 +484,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
-	completion.comp_mask = VMA_MP_MASK_TIMESTAMP;
+	completion.comp_mask = VMA_CB_MASK_TIMESTAMP | VMA_CB_MASK_NET_HDR_PTR;
 	printf("number of rings = %d\n",t->numOfRings);
 	while (1) {
 //	for (int iter = 0; iter < 1000000; iter++) {
@@ -495,7 +502,8 @@ void *run_stride(void *arg)
 				if (completion.packets == 0) {
 					continue;
 				}
-				data = ((uint8_t *) completion.payload_ptr);
+				data = use_payload_ptr ? ((uint8_t *) completion.payload_ptr):
+						((uint8_t *) completion.usr_hdr_ptr);
 				// printf("run_stride: parsing %d packets\n",(int)completion.packets);
 				t->rings[i]->fvalidatePackets(data, completion.packets,t->rings[i]);
 			}
@@ -525,7 +533,7 @@ void *run_stride(void *arg)
 void *run_zero(void *arg)
 {
 	struct RXThread *t = (struct RXThread *) arg;
-	uint8_t Dump[STRIDE_SIZE];
+	uint8_t Dump[MAX_STRIDE_SIZE];
 	uint8_t *data;
 	struct vma_api_t *vma_api = vma_get_api();
 	int flags = 0;
@@ -540,7 +548,7 @@ void *run_zero(void *arg)
 			for (int i = 0; i < t->rings[r]->numOfSockets; i++) {
 				RXSock* pSock = t->rings[r]->sock_vect[i];
 				for (int j = 0; j < 1000; j++) {
-					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, STRIDE_SIZE,&flags, NULL, NULL);
+					int size = vma_api->recvfrom_zcopy(pSock->fd, &Dump, MAX_STRIDE_SIZE, &flags, NULL, NULL);
 					if (MSG_VMA_ZCOPY & flags) {
 						z_packet = (struct vma_packets_t*) Dump;
 						data = (uint8_t *) z_packet->pkts[0].iov[0].iov_base;
@@ -612,6 +620,15 @@ void ShowLimit()
   printf("%d limit: %1ld,%1ld\n",err,lim.rlim_cur,lim.rlim_max);
 }
 
+const char* get_mode_by_enum(vma_cb_packet_rec_mode mode)
+{
+	switch (mode) {
+		case RAW_PACKET:			return "RAW_PACKET";
+		case STRIP_NETWORK_HRDS:	return "STRIP_NETWORK_HRDS";
+		case SEPERATE_NETWORK_HRDS:	return "SEPERATE_NETWORK_HRDS";
+		default:  return "";
+	}
+}
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
@@ -644,10 +661,10 @@ int main(int argc, char *argv[])
 	}
 	if (argc < 3) {
 		printf(
-				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num scenario [0,1,2] "
-						"sleep [min packet] [max packet] use_vma\n");
+				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
+				"sleep [min packet] [max packet] [umr mode RAW->0(default), STRIP->1, SEPARATE->2] "
+				"[packet size default 1400] [hdr size default 0] use_vma(deafult yes)\n");
 		printf("   logs packet drops\n");
-		printf("   scenarios:\n");
 		printf("   0 %s\n", get_sceanrio_str(0));
 		printf("   1 %s\n", get_sceanrio_str(1));
 		printf("   2 %s\n", get_sceanrio_str(2));
@@ -743,15 +760,62 @@ int main(int argc, char *argv[])
 	if (argc > 8) {
 		max_s = atoi(argv[8]);
 	}
-	printf("running checker with:\n\tfds: %d\n \tthreads:%d\n\trings: %d  "
-		"\n\tscenario: %s \n\tmin packet %d\n\tmax packet %d "
-		"\n\tsleep_time %d\n",
-		socketRead, threads_num, uniqueRings, get_sceanrio_str(scenario),
-		min_s, max_s, sleep_time);
-	int use_vma = 1;
 	if (argc > 9) {
+		mode = (vma_cb_packet_rec_mode)atoi(argv[9]);
+	}
+	if (argc > 10) {
+		g_stride_size = g_packet_size_to_skip = atoi(argv[10]);
+	}
+	if (argc > 11) {
+		header_size = atoi(argv[11]);
+	}
+	int use_vma = 1;
+	if (argc > 12) {
 		use_vma = atoi(argv[9]);
 	}
+	/*
+	 * raw packet -> 1442(payload)
+	 * strip->1400 (payload)
+	 * strip+hdr 8+1392 (hdr)
+	 * seperate 42 +1400 (payload)
+	 * seperate+hdr 50 1392 (hdr)
+	 */
+	switch (mode) {
+		case RAW_PACKET:
+			g_packet_size_to_skip = g_stride_size + g_net_size;
+			if (header_size) {
+				printf("Invalid can't use raw with user header");
+				exit(-1);
+			}
+			break;
+		case STRIP_NETWORK_HRDS:
+			if (header_size) {
+				g_packet_size_to_skip = header_size;
+			}
+			g_net_size = 0;
+			break;
+		case SEPERATE_NETWORK_HRDS:
+			if (header_size) {
+				g_packet_size_to_skip = header_size + g_net_size;
+			} else {
+				g_net_size = 0;
+			}
+			break;
+		default:
+			break;
+	}
+
+	if (header_size) {
+		use_payload_ptr = 0;
+	}
+	printf("running checker with:\n\tfds: %d\n \tthreads:%d\n\trings: %d  "
+		"\n\tscenario: %s \n\tmin packet %d\n\tmax packet %d "
+		"\n\tsleep_time: %d\n\treceive mode: %s\n\tpayload_size: %d"
+		"\n\theader_size: %d\n\n",
+		socketRead, threads_num, uniqueRings, get_sceanrio_str(scenario),
+		min_s, max_s, sleep_time, get_mode_by_enum(mode), g_stride_size, header_size);
+
+	printf("net size %d size_to_skip %d\n",g_net_size, g_packet_size_to_skip);
 	//load VMA so
 	if (sock_num < threads_num) {
 		printf("Error - you need to have at least the same thread as sockets. "
@@ -791,12 +855,17 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 		vma_ring_type_attr ring;
+		memset(&ring, 0, sizeof(ring));
 		ring.ring_type = VMA_RING_CYCLIC_BUFFER;
 		// buffer size is 2^17 = 128MB
-    	ring.ring_cyclicb.num = (1<<17);
+		ring.ring_cyclicb.num = (1<<17);
 		// user packet size ( not including the un-scattered data
-    	ring.ring_cyclicb.stride_bytes = 1400;
-		//ring.ring_cyclicb.comp_mask = VMA_RING_TYPE_MASK;
+		ring.ring_cyclicb.stride_bytes = g_stride_size;
+		ring.ring_cyclicb.hdr_bytes = header_size;
+		ring.ring_cyclicb.comp_mask = VMA_CB_HDR_PACKET_REC_MODE |
+									  VMA_CB_HDR_BYTE;
+		//umr
+		ring.ring_cyclicb.packet_receive_mode = mode;
 		int res = vma_api->vma_add_ring_profile(&ring, &prof);
 		if (res) {
 			printf("failed adding ring profile");
@@ -851,6 +920,9 @@ int main(int argc, char *argv[])
 		if (pRings[i]->numOfSockets == 1) {
 			pRings[i]->fvalidatePackets = CheckSingleSocketPackets;
 		} else {
+			if (mode != RAW_PACKET) {
+				printf("multi us only supported in RAW_PACKET");
+			}
 			pRings[i]->fvalidatePackets = CheckMultiSocketsPackets;
 		}
 	}
@@ -915,16 +987,17 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 {
 //	printf("%s\n",__func__);
 	RXSock* pSock = pRing->sock_vect[0];
+	data += g_net_size;
 #if 0 // validate simple increment number 1..n
 	for (size_t k = 0; k < packets; k++) {
-		long SequenceNumber = atol((char *)data+42);
+		long SequenceNumber = atol((char *)data);
 		pSock->rxCount++;
 		if (pSock->LastSequenceNumber + 1 != SequenceNumber) {
 			printf("error prev seq is %u, curr is %lu\n",pSock->LastSequenceNumber,SequenceNumber);
 			pSock->rxDrop++;
 		}
 		pSock->LastSequenceNumber = SequenceNumber;
-		data += STRIDE_SIZE;
+		data += g_packet_size_to_skip;
 	}
 	unsigned long long currentTime = time_get_usec();
 	if (currentTime > pSock->statTime) {
@@ -933,8 +1006,9 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 	}
 #else
 	for (size_t k = 0; k < packets; k++) {
-		pSock->fvalidatePacket(data +42, pRing->sock_vect[0]);
-		data += STRIDE_SIZE;
+		pRing->sock_vect[0]->fvalidatePacket(data, pRing->sock_vect[0]);
+		data += g_packet_size_to_skip;
+
 	}
 	unsigned long long currentTime = time_get_usec();
 	if (currentTime > pSock->statTime) {
@@ -949,8 +1023,8 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 //	printf("%s, ring id = %d\n",__func__,pRing->ring_id);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned short hash = getHashValFromPacket(data);
-		pRing->hashedSock[hash]->fvalidatePacket(data+42,pRing->hashedSock[hash]);
-		data+= STRIDE_SIZE;
+		pRing->hashedSock[hash]->fvalidatePacket(data+g_net_size,pRing->hashedSock[hash]);
+		data+= g_packet_size_to_skip;
 	}
 	unsigned long long currentTime = time_get_usec();
 	RXSock* pSock = pRing->sock_vect[0];
@@ -1033,7 +1107,7 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
 
 			LostCount = 0;
 		}
-		if (sock->LastSequenceNumber >= 0 && sock->LastSequenceNumber != DEFAULT_VALUE) {
+		if (sock->LastSequenceNumber >= 0 && sock->LastSequenceNumber != DEFAULT_VALUE && LostCount) {
 			sock->rxDrop += LostCount;
 		}
 
@@ -1042,7 +1116,7 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
 		sock->bad_packets++;
 	}
 	// clear data
-	*(uint16_t *)(data + 2) = 0xffff;
+	*(uint32_t *)(data) = 0;
 }
 
 // packet base chekers, get the packet data pointer, after the IP/UDP
@@ -1230,7 +1304,7 @@ void checkGVSPV2packet(uint8_t* data, RXSock* sock)
 		sock->lastPacketType = packet_type;
 	}
 	*(uint32_t *)(data) = 0;
-	*(uint32_t *)(data[4]) = 0;
+	*(uint32_t *)(&data[4]) = 0;
 
 }
 
