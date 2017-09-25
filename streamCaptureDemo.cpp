@@ -87,7 +87,7 @@ class CommonCyclicRing;
 
 
 typedef void (*validatePackets)(uint8_t*, size_t, CommonCyclicRing*);
-typedef void (*validatePacket)(uint8_t*, RXSock*);
+typedef void (*validatePacket)(uint8_t*, RXSock*, size_t);
 typedef void (*printInfo)(RXSock*);
 typedef void* (*Process_func)(void*);
 
@@ -236,10 +236,10 @@ static unsigned short hashIpPort2(sockaddr_in addr );
 static inline unsigned short getHashValFromPacket(uint8_t* data);
 
 
-static void checkpacket(uint8_t* data, RXSock* sock);
-static void checkMpegTsPacket(uint8_t* data, RXSock* sock);
-static void checkRtpPacket(uint8_t* data, RXSock* sock);
-static void checkGVSPV2packet(uint8_t* data, RXSock* sock);
+static void checkpacket(uint8_t* data, RXSock* sock, size_t idx);
+static void checkMpegTsPacket(uint8_t* data, RXSock* sock, size_t idx);
+static void checkRtpPacket(uint8_t* data, RXSock* sock, size_t idx);
+static void checkGVSPV2packet(uint8_t* data, RXSock* sock, size_t idx);
 /*
 static void checkMpegTsPackets(uint8_t* data,size_t packets,CommonCyclicRing* pRing);
 static void checkGVSPV2packets(uint8_t* data, size_t packets, CommonCyclicRing* pRing);
@@ -448,7 +448,7 @@ void *run_copy(void *arg)
 				for (int j = 0; j < 1000; j++) {
 					int size = vma_recv(pSock->fd, Dump, MAX_STRIDE_SIZE, MSG_NOSIGNAL);
 					if (size > 0)
-						pSock->fvalidatePacket(Dump, pSock);
+						pSock->fvalidatePacket(Dump, pSock , 0);
 					}
 				pSock->fprintinfo(pSock);
 				}
@@ -556,7 +556,7 @@ void *run_zero(void *arg)
 						data = Dump;
 					}
 					if (size > 0) {
-						pSock->fvalidatePacket(data, pSock);
+						pSock->fvalidatePacket(data, pSock, 0);
 						if (MSG_VMA_ZCOPY & flags) {
 							z_packet = (struct vma_packets_t*) Dump;
 							vma_api->free_packets(pSock->fd, z_packet->pkts, z_packet->n_packet_num);
@@ -1006,7 +1006,7 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 	}
 #else
 	for (size_t k = 0; k < packets; k++) {
-		pRing->sock_vect[0]->fvalidatePacket(data, pRing->sock_vect[0]);
+		pRing->sock_vect[0]->fvalidatePacket(data, pRing->sock_vect[0], k);
 		data += g_packet_size_to_skip;
 
 	}
@@ -1023,7 +1023,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 //	printf("%s, ring id = %d\n",__func__,pRing->ring_id);
 	for (size_t k = 0; k < packets; k++) {		
 		unsigned short hash = getHashValFromPacket(data);
-		pRing->hashedSock[hash]->fvalidatePacket(data+g_net_size,pRing->hashedSock[hash]);
+		pRing->hashedSock[hash]->fvalidatePacket(data+g_net_size,pRing->hashedSock[hash], k);
 		data+= g_packet_size_to_skip;
 	}
 	unsigned long long currentTime = time_get_usec();
@@ -1034,7 +1034,7 @@ static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclic
 		}
 }
 
-void checkpacket(uint8_t* data, RXSock* sock)
+void checkpacket(uint8_t* data, RXSock* sock, size_t idx)
 {
 	uint8_t* pdata = data;
 	bool isMPEGTS = true;
@@ -1089,10 +1089,10 @@ void checkpacket(uint8_t* data, RXSock* sock)
 		sock->fprintinfo = printGvspInfo;
 		printf("Socket address %s:%u, will be parsed ad GVSP (default) format\n", sock->ipAddress,sock->sin_port);
 	} else {
-		printf("failed to parse packet, retry\n");
+		printf("failed to parse packet, retry idx %zd\n",idx);
 	}
 }
-static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
+static inline void checkRtpPacket(uint8_t* data, RXSock* sock, size_t idx)
 {
 	// version == 2 and payload type (PT) is  98 – High bit rate media transport / 27-MHz Clock
 	if (((data[0] & 0xC0) == 0x80) && ((data[1] & 0x7f) == sock->rtpPayloadType)) {
@@ -1114,13 +1114,14 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock)
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
 		sock->bad_packets++;
+		printf("%zd \n", idx);
 	}
 	// clear data
 	*(uint32_t *)(data) = 0;
 }
 
 // packet base chekers, get the packet data pointer, after the IP/UDP
-static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock)
+static inline void checkMpegTsPacket(uint8_t* data, RXSock* sock, size_t idx)
 {
 	uint16_t pid;
 	// skip mac IP and UDP hdr
@@ -1241,7 +1242,7 @@ static inline void printGvspInfo(RXSock* sock)
 	sock->bad_packets = 0;
 }
 
-void checkGVSPV2packet(uint8_t* data, RXSock* sock)
+void checkGVSPV2packet(uint8_t* data, RXSock* sock, size_t idx)
 {
 	uint32_t lastPacketId = sock->LastSequenceNumber;
 	int lastPacketType = sock->lastPacketType;
