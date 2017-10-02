@@ -942,6 +942,7 @@ static void CheckSingleSocketPackets(uint8_t* data, size_t packets, CommonCyclic
 		pSock->statTime = currentTime + PRINT_PERIOD;
 	}
 #endif
+	fflush(stdout);
 }
 
 static void CheckMultiSocketsPackets(uint8_t* data, size_t packets, CommonCyclicRing* pRing)
