@@ -624,8 +624,8 @@ const char* get_mode_by_enum(vma_cb_packet_rec_mode mode)
 {
 	switch (mode) {
 		case RAW_PACKET:			return "RAW_PACKET";
-		case STRIP_NETWORK_HRDS:	return "STRIP_NETWORK_HRDS";
-		case SEPERATE_NETWORK_HRDS:	return "SEPERATE_NETWORK_HRDS";
+		case STRIP_NETWORK_HDRS:	return "STRIP_NETWORK_HRDS";
+		case SEPERATE_NETWORK_HDRS:	return "SEPERATE_NETWORK_HRDS";
 		default:  return "";
 	}
 }
@@ -788,13 +788,13 @@ int main(int argc, char *argv[])
 				exit(-1);
 			}
 			break;
-		case STRIP_NETWORK_HRDS:
+		case STRIP_NETWORK_HDRS:
 			if (header_size) {
 				g_packet_size_to_skip = header_size;
 			}
 			g_net_size = 0;
 			break;
-		case SEPERATE_NETWORK_HRDS:
+		case SEPERATE_NETWORK_HDRS:
 			if (header_size) {
 				g_packet_size_to_skip = header_size + g_net_size;
 			} else {
