@@ -446,6 +446,7 @@ void *run_copy(void *arg)
 				pSock->fprintinfo(pSock);
 				}
 			}
+		fflush(stdout);
 		usleep(sleep_time);
 		}
 	return NULL;
@@ -559,6 +560,7 @@ void *run_zero(void *arg)
 				}
 			}
 		}
+		fflush(stdout);
 		usleep(sleep_time);
 	}
 	return NULL;
