@@ -484,7 +484,7 @@ void *run_stride(void *arg)
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
 	struct vma_completion_cb_t completion;
-	completion.comp_mask = VMA_CB_MASK_TIMESTAMP | VMA_CB_MASK_NET_HDR_PTR;
+	completion.comp_mask = VMA_CB_MASK_TIMESTAMP;
 	printf("number of rings = %d\n",t->numOfRings);
 	while (1) {
 //	for (int iter = 0; iter < 1000000; iter++) {
@@ -862,8 +862,7 @@ int main(int argc, char *argv[])
 		// user packet size ( not including the un-scattered data
 		ring.ring_cyclicb.stride_bytes = g_stride_size;
 		ring.ring_cyclicb.hdr_bytes = header_size;
-		ring.ring_cyclicb.comp_mask = VMA_CB_HDR_PACKET_REC_MODE |
-									  VMA_CB_HDR_BYTE;
+		ring.ring_cyclicb.comp_mask = VMA_CB_HDR_BYTE;
 		//umr
 		ring.ring_cyclicb.packet_receive_mode = mode;
 		int res = vma_api->vma_add_ring_profile(&ring, &prof);
