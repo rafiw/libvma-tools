@@ -210,13 +210,14 @@ public:
 	  time (&rawtime);
   	timeinfo = localtime(&rawtime);
 	  strftime(buffer,sizeof(buffer),"%d-%m-%Y %I:%M:%S",timeinfo);
-  	std::string currtimestampe(buffer);  	
-  	std::string fname = "VMA_THD_" +nicName + "_";
-  	outputfile.open(fname.c_str(),std::ofstream::out | std::ofstream::app);
-	outputfile << "******************************************" << std::endl;
-	outputfile << "VMA cyclic Buffer" << std::endl;
-	outputfile << "******************************************" << std::endl << std::endl;
-	outputfile << currtimestampe << std::endl;
+//  	std::string currtimestampe(buffer);
+//  	std::string fname = "VMA_THD_" +nicName + "_";
+//  	outputfile.open(fname.c_str(),std::ofstream::out | std::ofstream::app);
+//	outputfile << "******************************************" << std::endl;
+//	outputfile << "VMA cyclic Buffer" << std::endl;
+//	outputfile << "******************************************" << std::endl << std::endl;
+//	outputfile << currtimestampe << std::endl;
+//	outputfile.close();
 }
 void printTime()
 {
@@ -342,7 +343,7 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 	if (scenario == 2)
 		CreateRingProfile(CommonFdPerRing, RingProfile, ring_id, RxSocket );
 	 // bind to specific device
-	struct ifreq interface;
+	struct ifreq interface = {0};
 	strncpy(interface.ifr_ifrn.ifrn_name, device, IFNAMSIZ);
 	//printf("%s SO_BINDTODEVICE %s\n",__func__,interface.ifr_ifrn.ifrn_name);
 	if (vma_setsockopt(RxSocket, SOL_SOCKET, SO_BINDTODEVICE,
@@ -527,6 +528,14 @@ void *run_stride(void *arg)
 			}
 		}
 	}
+	for (std::vector<CommonCyclicRing*>::iterator pRing = t->rings.begin();
+				pRing != t->rings.end(); ++pRing) {
+		int sock_len = (*pRing)->numOfSockets;
+		for (int i = 0; i < sock_len; i++) {
+			close((*pRing)->sock_vect[i]->fd);
+		}
+	}
+	delete vma_api;
 	return NULL;
 }
 
@@ -569,6 +578,7 @@ void *run_zero(void *arg)
 		}
 		usleep(sleep_time);
 	}
+	delete vma_api;
 	return NULL;
 }
 const char* get_sceanrio_str(int scen)
@@ -642,14 +652,14 @@ int main(int argc, char *argv[])
   int err = setrlimit(RLIMIT_NOFILE,&lim);
   printf("set rlimit returned %d\n",err);
   ShowLimit();
-
+  struct vma_api_t *vma_api;
 	printf("-------------------------------------------------------------\n");
 	printf("streamCaptureDemo                                            \n");
 	printf("-------------------------------------------------------------\n");
 	//struct RXSock fds[1024];
 	CommonCyclicRing* pRings[MAX_RINGS];
   char HashColision[MAX_RINGS][MAX_SOCKETS_PER_RING] ={0};
-	int uniqueRings;
+	int uniqueRings = 0;
 	struct RXThread rxThreads[MAX_SOCKETS_THREAD];
 	for (int r=0; r< MAX_SOCKETS_THREAD; r++) {
 		rxThreads[r].thread_idx = r;
@@ -730,6 +740,7 @@ int main(int argc, char *argv[])
 			break;
 		}
 	}
+	infile.close();
 	if (socketRead < sock_num) {
 		printf("found only %d socket described in the file\n", socketRead);
 	}
@@ -797,6 +808,7 @@ int main(int argc, char *argv[])
 		case SEPERATE_NETWORK_HDRS:
 			if (header_size) {
 				g_packet_size_to_skip = header_size + g_net_size;
+				g_packet_size_to_skip = 64;
 			} else {
 				g_net_size = 0;
 			}
@@ -849,7 +861,7 @@ int main(int argc, char *argv[])
 	}
 	int prof = 0;
 	if (scenario == 2) {
-		struct vma_api_t *vma_api = vma_get_api();
+		vma_api = vma_get_api();
 		if (vma_api == NULL) {
 			printf("VMA Extra API not found - working with default socket APIs, exiting");
 			exit(1);
@@ -978,6 +990,8 @@ int main(int argc, char *argv[])
 		}
 	}
   destroyFlows(pRings);
+  if (vma_api)
+	  delete vma_api;
 	exit(0);
 }
 
@@ -1113,7 +1127,10 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock, size_t idx)
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
 		sock->bad_packets++;
+#define DEBUG 0
+#if DEBUG
 		printf("%zd \n", idx);
+#endif
 	}
 	// clear data
 	*(uint32_t *)(data) = 0;
