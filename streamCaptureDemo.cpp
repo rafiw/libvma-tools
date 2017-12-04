@@ -193,9 +193,9 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
 		}
 		vma_ring_type_attr ring;
 		ring.ring_type = VMA_RING_CYCLIC_BUFFER;
-		ring.ring_cyclicb.num = (1<<8);
+		ring.ring_cyclicb.num = (1<<17);
 		ring.ring_cyclicb.stride_bytes = 1400;
-		ring.ring_cyclicb.comp_mask = 3;
+		ring.ring_cyclicb.comp_mask = 0;
 		int p;
 		int res = vma_api->vma_add_ring_profile(&ring, &p);
 		if (res) {
@@ -203,7 +203,8 @@ static int OpenRxSocket(struct sockaddr_in *addr, uint32_t ssm, char *device,
 			exit(-1);
 		}
 		vma_ring_alloc_logic_attr profile;
-		profile.comp_mask = 11;
+		profile.comp_mask = VMA_RING_ALLOC_MASK_RING_PROFILE_KEY |
+							VMA_RING_ALLOC_MASK_RING_INGRESS;
 		profile.engress = 0;
 		profile.ingress = 1;
 		profile.ring_profile_key = p;
@@ -336,15 +337,15 @@ void *run_stride(void *arg)
 	}
 	flags = MSG_DONTWAIT;
 	printf("starting rx\n");
-	struct vma_completion_mp_t completion;
-	for (int iter = 0; iter < 1000; iter++) {
+	struct vma_completion_cb_t completion;
+	while(1) {
 		for (int i = 0; i < t->sock_len; i++) {
 			for (int j = 0; j < 10; j++) {
 				completion.packets = 0;
 				int res = vma_api->vma_cyclic_buffer_read(
 						t->sock[i]->ring_fd,
 						&completion, t->min_s, t->max_s,
-						&flags);
+						flags);
 				if (res == -1) {
 					printf("vma_cyclic_buffer_read returned -1");
 					exit(-1);
