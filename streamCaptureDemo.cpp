@@ -808,7 +808,6 @@ int main(int argc, char *argv[])
 		case SEPERATE_NETWORK_HDRS:
 			if (header_size) {
 				g_packet_size_to_skip = header_size + g_net_size;
-				g_packet_size_to_skip = 64;
 			} else {
 				g_net_size = 0;
 			}
