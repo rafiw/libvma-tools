@@ -502,7 +502,6 @@ void *run_stride(void *arg)
 				if (completion.packets == 0) {
 					continue;
 				}
-				printf("size is %zd\n",completion.payload_length);
 				data = use_payload_ptr ? ((uint8_t *) completion.payload_ptr):
 						((uint8_t *) completion.usr_hdr_ptr);
 				// printf("run_stride: parsing %d packets\n",(int)completion.packets);
