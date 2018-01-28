@@ -68,7 +68,6 @@ int MAX_STRIDE_SIZE = 2048;
 int g_stride_size = 1400;
 int g_packet_size_to_skip = 1400;
 int g_net_size = 42;
-vma_cb_packet_rec_mode mode = RAW_PACKET;
 int use_payload_ptr = 1;
 int header_size = 0;
 int sock_num;
@@ -503,6 +502,7 @@ void *run_stride(void *arg)
 				if (completion.packets == 0) {
 					continue;
 				}
+				printf("size is %zd\n",completion.payload_length);
 				data = use_payload_ptr ? ((uint8_t *) completion.payload_ptr):
 						((uint8_t *) completion.usr_hdr_ptr);
 				// printf("run_stride: parsing %d packets\n",(int)completion.packets);
@@ -636,9 +636,21 @@ const char* get_mode_by_enum(vma_cb_packet_rec_mode mode)
 		case RAW_PACKET:			return "RAW_PACKET";
 		case STRIP_NETWORK_HDRS:	return "STRIP_NETWORK_HRDS";
 		case SEPERATE_NETWORK_HDRS:	return "SEPERATE_NETWORK_HRDS";
+		case PADDED_PACKET:			return "PADDED_PACKET";
 		default:  return "";
 	}
 }
+
+template<typename signedType>
+signedType int_round_up_to_power_of_2(signedType v)
+{
+    signedType power = 1;
+
+    while (power < v)
+        power *= 2;
+    return power;
+}
+
 /******************************************************************************/
 /******************************************************************************/
 /******************************************************************************/
@@ -672,7 +684,7 @@ int main(int argc, char *argv[])
 	if (argc < 3) {
 		printf(
 				"usage: streamCaptureDemo eth0 [file of ip port] fds_num threads_num sceanrio [0,1,2] "
-				"sleep [min packet] [max packet] [umr mode RAW->0(default), STRIP->1, SEPARATE->2] "
+				"sleep [min packet] [max packet] [umr mode RAW->0(default), STRIP->1, SEPARATE->2 ->PADDED(NO KLM)] "
 				"[packet size default 1400] [hdr size default 0] use_vma(deafult yes)\n");
 		printf("   logs packet drops\n");
 		printf("   0 %s\n", get_sceanrio_str(0));
@@ -771,6 +783,7 @@ int main(int argc, char *argv[])
 	if (argc > 8) {
 		max_s = atoi(argv[8]);
 	}
+	vma_cb_packet_rec_mode mode = RAW_PACKET;
 	if (argc > 9) {
 		mode = (vma_cb_packet_rec_mode)atoi(argv[9]);
 	}
@@ -792,6 +805,13 @@ int main(int argc, char *argv[])
 	 * seperate+hdr 50 1392 (hdr)
 	 */
 	switch (mode) {
+		case PADDED_PACKET:
+			g_packet_size_to_skip = int_round_up_to_power_of_2(g_stride_size + g_net_size);
+			if (header_size) {
+				printf("Invalid can't use padded with user header");
+				exit(-1);
+			}
+			break;
 		case RAW_PACKET:
 			g_packet_size_to_skip = g_stride_size + g_net_size;
 			if (header_size) {
@@ -1125,6 +1145,7 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock, size_t idx)
 
 		sock->LastSequenceNumber = SequenceNumber;
 	} else {
+		printf("%d %d\n",data[0] & 0xC0,(data[1] & 0x7f));
 		sock->bad_packets++;
 #define DEBUG 0
 #if DEBUG
