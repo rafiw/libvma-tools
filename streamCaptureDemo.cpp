@@ -328,8 +328,8 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 		return 0;
 	}
 	fcntl(RxSocket, F_SETFL, O_NONBLOCK);
-	/* Set max socket recieve buffer
-#define    IP_RCV_BUFFER_MAX_SIZE   (8096*4096)
+	// Set max socket recieve buffer
+#define    IP_RCV_BUFFER_MAX_SIZE   ((1<<16)*1500)
 	uint32_t rcvbuf_size = IP_RCV_BUFFER_MAX_SIZE;
 	i_ret = vma_setsockopt(RxSocket, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size,
 	 sizeof(rcvbuf_size));
@@ -338,7 +338,7 @@ static int OpenRxSocket(int ring_id, sockaddr_in* addr, uint32_t ssm, char *devi
 	 vma_close(RxSocket);
 	 RxSocket = 0;
 	 return 0;
-	 }*/
+	 }
 	if (scenario == 2)
 		CreateRingProfile(CommonFdPerRing, RingProfile, ring_id, RxSocket );
 	 // bind to specific device
@@ -1140,6 +1140,7 @@ static inline void checkRtpPacket(uint8_t* data, RXSock* sock, size_t idx)
 		}
 		if (sock->LastSequenceNumber >= 0 && sock->LastSequenceNumber != DEFAULT_VALUE && LostCount) {
 			sock->rxDrop += LostCount;
+			printf("%u\n",SequenceNumber);
 		}
 
 		sock->LastSequenceNumber = SequenceNumber;
@@ -1227,6 +1228,7 @@ static inline void printRtpInfo(RXSock* sock)
 	sock->rxDrop = 0;
 	sock->bad_packets = 0;
 	sock->statTime = currentTime + PRINT_PERIOD;
+	fflush(stdout);
 }
 
 static inline void printMpegTsInfo(RXSock* sock)
